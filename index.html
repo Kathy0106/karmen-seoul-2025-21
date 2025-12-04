@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>首爾聖誕自由行</title>
+    <!-- 載入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 載入 Zen Maru Gothic 字體 -->
+    <link href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@400;700&display=swap" rel="stylesheet">
+    <!-- 載入 Font Awesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    
+    <style>
+        /* 定義主題顏色和字體 */
+        :root {
+            --color-fuji-blue: #92B7E5; /* 富士藍 */
+            --color-snow-white: #FFFFFF;
+            --color-warm-gray: #F5F7FA;
+            --color-primary-accent: #FF7B8E; /* 可愛粉紅作為重點色 */
+        }
+        
+        body {
+            font-family: 'Zen Maru Gothic', 'Noto Sans TC', 'sans-serif';
+            background-color: var(--color-warm-gray);
+        }
+
+        /* 確保內容在底部導航上方 */
+        #app-content {
+            padding-bottom: 72px; /* 底部導航條高度 */
+        }
+
+        /* 自定義滾動條 (可選，提供日式柔和感) */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background-color: rgba(146, 183, 229, 0.5); /* 富士藍半透明 */
+            border-radius: 4px;
+        }
+        
+        /* 卡片編輯模式的輸入框樣式 */
+        .editable-input {
+            width: 100%;
+            padding: 4px 8px;
+            margin-top: 4px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            background-color: var(--color-snow-white);
+            font-size: 0.9rem;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        }
+    </style>
+</head>
+<body class="min-h-screen">
+    <div id="app" class="max-w-md mx-auto shadow-2xl bg-white min-h-screen">
+        <!-- App Content Area -->
+        <div id="app-content">
+            <!-- Header (將由 JS 渲染) -->
+            <header id="app-header" class="sticky top-0 z-10"></header>
+            
+            <!-- Daily Selector (將由 JS 渲染) -->
+            <div id="day-selector" class="sticky top-[100px] z-10 p-3 bg-white shadow-sm"></div>
+
+            <!-- Content for selected tab and day -->
+            <div id="main-content" class="p-4">
+                <!-- Loading State -->
+                <div id="loading-spinner" class="text-center p-8">
+                    <i class="fas fa-spinner fa-spin fa-3x text-indigo-500"></i>
+                    <p class="mt-4 text-gray-600">正在載入可愛的旅行資料...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bottom Navigation Bar (將由 JS 渲染) -->
+        <nav id="bottom-nav" class="fixed bottom-0 left-0 right-0 max-w-md mx-auto z-20"></nav>
+
+        <!-- Modals for Editing (Placeholder) -->
+        <div id="modal-container"></div>
+    </div>
+
+    <!-- Firebase Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        // import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        // setLogLevel('Debug'); // Open Firestore Debug Log
+        
+        // --- Globals & Initialization ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app, db, auth;
+        
+        let userId = null;
+        let isAuthReady = false;
+        
+        // --- App State ---
+        let state = {
+            currentTab: 'Itinerary', // Itinerary | Guide | Weather | Expense
+            currentDay: '12/25',
+            itinerary: [],
+            expense: [],
+            budget: 500000, // Initial budget 500,000 KRW
+            tripTitle: "首爾聖誕自由行",
+            tripDates: "2025/12/25 - 12/29",
+            tabs: [
+                { id: 'Itinerary', name: '行程', icon: 'fas fa-calendar-alt' },
+                { id: 'Guide', name: '指南', icon: 'fas fa-map-marked-alt' },
+                { id: 'Weather', name: '天氣', icon: 'fas fa-cloud-sun' },
+                { id: 'Expense', name: '消費', icon: 'fas fa-wallet' },
+            ],
+            flightInfo: [
+                { type: 'Departure', flight: 'UO626', route: '香港 (HKG) → 首爾 (ICN)', time: '07:30 - 11:55', status: '預計準時' },
+                { type: 'Return', flight: 'UO631', route: '首爾 (ICN) → 香港 (HKG)', time: '17:40 - 20:25', status: '預計準時' },
+            ]
+        };
+
+        // --- Initial Data (Hardcoded Itinerary based on user prompt) ---
+        const initialItineraryData = [
+            { day: '12/25', date: '12/25', dayName: 'Day 1', area: '安國, 弘大, 明洞', items: [
+                { category: '早餐', name: 'Dotori Garden', koreanName: '도토리가든', address: '서울 종로구 북촌로 4길 20', tags: ['必拍'], description: '可愛的松鼠主題咖啡廳，建議在戶外庭院拍照，光線最佳。', map: 'naver' },
+                { category: '購物', name: '安國逛街順路', koreanName: '제로스페이스, 오브젝트, 소월디파트먼트...', address: '북촌로5가길 一帶', tags: ['必買'], description: 'ZERO SPACE, Object 安國, Sowol Department, INOUR MANSION, OINU, Tamburins 安國', map: 'naver' },
+                { category: '交通', name: '安國 → 弘大', description: '地鐵18分鐘', map: '' },
+                { category: '午餐', name: 'Gop Mapo 烤肥腸', koreanName: '곱마포', address: '서울 마포구 독막로7길 51', tags: ['必吃'], description: '馬浦區的特色烤肥腸，口感香脆，適合大口吃肉。', map: 'naver' },
+                { category: '下午茶', name: 'Artist Bakery 弘大', koreanName: '아티스트 베이커리', address: '서울 마포구 동교로 251-3', tags: ['必拍'], description: '招牌鹽麵包和歐式麵包，是弘大人氣麵包店。', map: 'naver' },
+                { category: '交通', name: '徒步 12分鐘 → 延南洞', description: '享受延南洞的悠閒氛圍', map: '' },
+                { category: '甜品', name: '延南洞食 & Café', koreanName: '훈훈호떡, 히포커피', address: '동교로30길 19 一帶', tags: ['必吃'], description: 'HUNHUN 糖餅（經典韓式甜點）及 HIPPO Coffee（特色咖啡）。', map: 'naver' },
+                { category: '交通', name: '延南洞 → 明洞', description: '搭乘地鐵', map: '' },
+                { category: '晚餐', name: '🦀烏達里家（醬蟹）', koreanName: '오다리집 간장게장', address: '서울 중구 명동8나길 28 2–3층', tags: ['必吃', '必拍'], description: '新鮮生醬蟹，拌飯一流。', map: 'naver' },
+                { category: '景點', name: '明洞聖誕燈飾', koreanName: '명동성당', address: '서울 중구 명동길 74', tags: ['必拍'], description: '欣賞明洞聖堂的聖誕燈飾，充滿節日氣氛。', map: 'naver' },
+            ]},
+            { day: '12/26', date: '12/26', dayName: 'Day 2', area: '明洞, 南大門, 東大門, 新堂', items: [
+                { category: '早餐', name: '宋家飯捲（明洞）', koreanName: '송가김밥', address: '서울 중구 퇴계로 120', tags: ['必吃'], description: '簡單美味的韓式飯捲，作為早餐快速又方便。', map: 'naver' },
+                { category: '購物', name: '明洞購物區', koreanName: '명동거리', address: '서울 중구 명동길 一帶', tags: ['必買'], description: '藥妝、服飾、街頭小吃應有盡有。', map: 'naver' },
+                { category: '午餐', name: '韓牛一條街（退溪路）', koreanName: '퇴계로 한우골목', address: '서울 중구 퇴계로 180길 一帶', tags: ['必吃'], description: '品嚐韓國頂級韓牛的聚集地。', map: 'naver' },
+                { category: '購物', name: '南大門市場', koreanName: '남대문시장', address: '서울 중구 남대문시장4길 21', tags: ['必買'], description: '韓國最大的傳統市場，適合買手信。', map: 'naver' },
+                { category: '購物', name: 'Doota Mall + No Brand 掃貨', koreanName: '두타몰', address: '서울 중구 장충단로 275', tags: ['必買'], description: 'Doota時尚購物商場，別忘了到 No Brand 購買零食日用品。', map: 'naver' },
+                { category: '甜品', name: 'Scooper Gelato', koreanName: '스쿠퍼 젤라토', address: '두타몰 地下層', tags: ['必吃'], description: '開心果 Affogato 必試。', map: 'naver' },
+                { category: '晚餐', name: '友誼辣雞爪（新堂）🔥', koreanName: '우정닭발', address: '서울 중구 퇴계로 421 (新堂 닭발 골목)', tags: ['必吃'], description: '新堂辣雞爪一條街的代表，挑戰韓國的辣味。', map: 'naver' },
+            ]},
+            { day: '12/27', date: '12/27', dayName: 'Day 3', area: '安國, 益善洞, 乙支路', items: [
+                { category: '早餐', name: 'Cafe Layered（安國）', koreanName: '카페 레이어드', address: '서울 종로구 북촌로 6', tags: ['必吃', '必拍'], description: '著名的英式司康店，復古氛圍適合打卡。', map: 'naver' },
+                { category: '午餐', name: 'Nakwonjang（益善洞）', koreanName: '낙원장', address: '서울 종로구 수표로28길 33', tags: ['必吃'], description: '益善洞的熱門韓屋餐廳，提供新式韓食。', map: 'naver' },
+                { category: '購物', name: '益善洞行小店／打卡', koreanName: '익선동 한옥거리', address: '서울 종로구 수표로28길 一帶', tags: ['必拍'], description: '在充滿懷舊氣氛的韓屋街道上閒逛小店、拍美照。', map: 'naver' },
+                { category: '晚餐', name: '水芹菜烤豬肉（乙支路）', koreanName: '돌판 수미나물 삼겹살', address: '서울 중구 수표로 48-1', tags: ['必吃'], description: '特色的石板烤三層肉，搭配新鮮水芹菜。', map: 'naver' },
+                { category: '活動', name: '🌙 飯後自由活動', description: '回酒店 / 便利店 / 明洞散步 皆可', map: '' },
+            ]},
+            { day: '12/28', date: '12/28', dayName: 'Day 4', area: '聖水 ALL DAY, 明洞', items: [
+                { category: '早餐', name: 'Onion 聖水', koreanName: '어니언 성수', address: '서울 성동구 아차산로17길 33', tags: ['必吃', '必拍'], description: '由廢棄工廠改建的超人氣咖啡廳，必試招牌麵包。', map: 'naver' },
+                { category: '購物', name: '聖水潮流散步', koreanName: '무신사, 아더에러, 탬버린즈', address: '연무장길 一帶', tags: ['必買'], description: '逛 Musinsa Standard、ADER ERROR 旗艦店和 Tamburins 聖水店，感受潮流氣息。', map: 'naver' },
+                { category: '午餐', name: '無垢屋', koreanName: '무쿠우동', address: '서울 성동구 서울숲2길 28-13', tags: ['必吃'], description: '以清淡湯頭聞名的烏冬店，簡約日式風格。', map: 'naver' },
+                { category: '甜品', name: 'Milky Shop', koreanName: '밀키샵', address: '서울 성동구 서울숲2길 19-13', tags: ['必吃'], description: '聖水洞人氣雪糕店，適合飯後來點甜點。', map: 'naver' },
+                { category: '交通', name: '聖水 → 明洞', description: '地鐵 20–25分鐘', map: '' },
+                { category: '晚餐', name: '晚餐二選一', description: '① IDAEJO 排骨湯 / ② 明洞炸雞 (橋村/bb.q/NENE)', map: '' },
+                { category: '晚餐', name: 'IDAEJO 排骨湯', koreanName: '이대조 감자탕', address: '서울 서대문구 이화여대3길 22', tags: ['選擇'], description: '經典韓式馬鈴薯排骨湯。', map: 'naver' },
+                { category: '晚餐', name: '明洞炸雞', koreanName: '교촌치킨, 비비큐, 네네치킨', address: '明洞8가길 一帶', tags: ['選擇'], description: '在明洞選擇一家你最喜歡的炸雞店，如橋村、bb.q 或 NENE。', map: 'naver' },
+            ]},
+            { day: '12/29', date: '12/29', dayName: 'Day 5', area: '明洞 → 機場', items: [
+                { category: '早餐', name: 'Egg Drop（明洞）', koreanName: '에그드랍', address: '서울 중구 명동길 24', tags: ['必吃'], description: '著名的韓式吐司連鎖店，作為回程前的早餐。', map: 'naver' },
+                { category: '購物', name: '明洞最後掃貨', koreanName: '명동거리', address: '서울 중구 명동길 一帶', tags: ['必買'], description: '在回程前進行最後的藥妝或零食補給。', map: 'naver' },
+                { category: '午餐', name: '豐川鰻魚', koreanName: '풍천장어', address: '서울 중구 명동4길 10', tags: ['必吃'], description: '在午餐時段享用高級的烤鰻魚，為旅程畫上句號。', map: 'naver' },
+                { category: '交通', name: '✈️ 飯後 → 機場', description: '回酒店領取行李，前往仁川/金浦機場。', map: '' },
+            ]},
+        ];
+
+        // --- Helper Functions ---
+        const mapUrl = (address, type = 'google') => {
+            if (type === 'naver') {
+                return `https://map.naver.com/p/search/${encodeURIComponent(address)}?c=15.00,0,0,0,zh-Hant`;
+            }
+            return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`;
+        };
+        
+        const formatCurrency = (amount, currency = 'KRW') => {
+            return new Intl.NumberFormat('en-US', { style: 'currency', currency: currency, minimumFractionDigits: 0 }).format(amount);
+        };
+
+        const getTagClasses = (tag) => {
+            switch (tag) {
+                case '必吃': return 'bg-red-400/80 text-white';
+                case '必買': return 'bg-yellow-400/80 text-gray-800';
+                case '必拍': return 'bg-indigo-400/80 text-white';
+                case '選擇': return 'bg-green-400/80 text-white';
+                default: return 'bg-gray-400/80 text-white';
+            }
+        };
+
+        const getCategoryIcon = (category) => {
+            switch (category) {
+                case '早餐':
+                case '午餐':
+                case '晚餐':
+                case '甜品':
+                case '下午茶':
+                    return 'fas fa-utensils text-green-500';
+                case '購物': return 'fas fa-shopping-bag text-pink-500';
+                case '景點': return 'fas fa-camera-retro text-yellow-500';
+                case '活動':
+                case '活動': return 'fas fa-hiking text-purple-500';
+                case '酒店': return 'fas fa-bed text-blue-500';
+                case '交通': return 'fas fa-bus-alt text-gray-500';
+                default: return 'fas fa-info-circle text-indigo-500';
+            }
+        };
+
+        // --- Firebase Interaction ---
+        // Ensure db is initialized before calling this
+        const getItineraryRef = () => doc(db, "artifacts", appId, "users", userId, "SeoulTripPlanner", "itinerary");
+        const getExpensesRef = () => doc(db, "artifacts", appId, "users", userId, "SeoulTripPlanner", "expenses");
+        
+        const saveItineraryToFirestore = async (data) => {
+            if (!userId) { /* console.error("User not authenticated, cannot save itinerary."); */ return; }
+            try {
+                const docRef = getItineraryRef();
+                await setDoc(docRef, { data: data, lastUpdated: new Date() }, { merge: true });
+                // console.log("Itinerary saved to Firestore.");
+            } catch (e) {
+                // console.error("Error saving itinerary: ", e);
+            }
+        };
+
+        const saveExpensesToFirestore = async (data, budget) => {
+            if (!userId) { /* console.error("User not authenticated, cannot save expenses."); */ return; }
+            try {
+                const docRef = getExpensesRef();
+                await setDoc(docRef, { expenses: data, budget: budget, lastUpdated: new Date() }, { merge: true });
+                // console.log("Expenses saved to Firestore.");
+            } catch (e) {
+                // console.error("Error saving expenses: ", e);
+            }
+        };
+
+        // --- Event Handlers (Bound via onclick) ---
+        
+        // These are defined outside the module scope to be callable from inline HTML onclick attributes
+        window.switchTab = (tabId) => {
+            if (state.currentTab === tabId) return;
+            state.currentTab = tabId;
+            // When switching tabs, if we are going to itinerary, make sure day selector is visible
+            if (tabId === 'Itinerary') {
+                document.getElementById('day-selector').style.display = 'block';
+            } else {
+                document.getElementById('day-selector').style.display = 'none';
+            }
+            renderApp();
+        };
+
+        window.switchDay = (date) => {
+            if (state.currentDay === date) return;
+            state.currentDay = date;
+            renderApp();
+        };
+
+        // Header Edit Handlers
+        window.handleTitleEdit = (newTitle) => {
+            state.tripTitle = newTitle;
+            renderHeader(); 
+        };
+        
+        window.handleDatesEdit = (newDates) => {
+            state.tripDates = newDates;
+            renderHeader(); 
+        };
+        
+        // Itinerary Edit Handlers
+        window.toggleEditItineraryItem = (day, index) => {
+            const dayData = state.itinerary.find(d => d.date === day);
+            if (!dayData) return;
+
+            const item = dayData.items[index];
+            
+            if (item.isEditing) {
+                // Save changes
+                const cardEl = document.getElementById(`item-${day}-${index}`);
+                // Use querySelector within the specific item card
+                const inputName = cardEl.querySelector('[data-field="name"]').value;
+                const inputKoreanName = cardEl.querySelector('[data-field="koreanName"]').value;
+                const inputAddress = cardEl.querySelector('[data-field="address"]').value;
+                const inputDescription = cardEl.querySelector('[data-field="description"]').value;
+                
+                // Update state
+                item.name = inputName;
+                item.koreanName = inputKoreanName;
+                item.address = inputAddress;
+                item.description = inputDescription;
+                
+                item.isEditing = false;
+                saveItineraryToFirestore(state.itinerary);
+            } else {
+                // Start editing
+                item.isEditing = true;
+            }
+            renderItineraryTab();
+        };
+
+        window.deleteItineraryItem = (day, index) => {
+            if (!confirm("確定刪除此行程項目？")) return;
+            const dayData = state.itinerary.find(d => d.date === day);
+            if (!dayData) return;
+            
+            dayData.items.splice(index, 1);
+            saveItineraryToFirestore(state.itinerary);
+            renderItineraryTab();
+        };
+
+        window.addItemToDay = () => {
+            const dayData = state.itinerary.find(d => d.date === state.currentDay);
+            if (!dayData) { return; }
+            
+            const newItem = {
+                category: '活動', 
+                name: '新增活動名稱', 
+                koreanName: '', 
+                address: '', 
+                tags: ['必拍'], 
+                description: '點擊儲存按鈕開始填寫內容！', 
+                map: 'naver',
+                isEditing: true
+            };
+            
+            dayData.items.push(newItem);
+            renderItineraryTab();
+        };
+
+        window.addNewDay = () => {
+            const newDate = prompt("請輸入新增一天的日期 (例如: 12/30)");
+            if (!newDate) return;
+
+            if (state.itinerary.some(d => d.date === newDate)) {
+                alert("該日期已存在。");
+                return;
+            }
+
+            const newDay = {
+                day: newDate, 
+                date: newDate, 
+                dayName: '新增 Day', 
+                area: '未定', 
+                items: [{ category: '活動', name: '全日自由活動', description: '新的一天！' }]
+            };
+            
+            state.itinerary.push(newDay);
+            state.itinerary.sort((a, b) => new Date(a.date) - new Date(b.date)); // Sort by date
+            saveItineraryToFirestore(state.itinerary);
+            state.currentDay = newDate;
+            renderApp();
+        };
+        
+        // Expense Edit Handlers
+        window.editBudget = () => {
+            const newBudget = prompt("請輸入新的總預算 (韓元 KRW):", state.budget);
+            if (newBudget !== null && !isNaN(parseInt(newBudget))) {
+                state.budget = parseInt(newBudget);
+                saveExpensesToFirestore(state.expense, state.budget);
+                renderExpenseTab();
+            }
+        };
+
+        window.editExpenseName = (index) => {
+            const item = state.expense[index];
+            const newName = prompt("編輯消費名稱:", item.name);
+            if (newName !== null && newName.trim() !== '') {
+                item.name = newName.trim();
+                saveExpensesToFirestore(state.expense, state.budget);
+                renderExpenseTab();
+            }
+        };
+
+        window.editExpenseAmount = (index) => {
+            const item = state.expense[index];
+            const newAmount = prompt("編輯花費金額 (KRW):", item.amount);
+            if (newAmount !== null && !isNaN(parseInt(newAmount))) {
+                item.amount = parseInt(newAmount);
+                saveExpensesToFirestore(state.expense, state.budget);
+                renderExpenseTab();
+            }
+        };
+
+        window.deleteExpense = (index) => {
+            if (!confirm("確定刪除此筆消費紀錄？")) return;
+            state.expense.splice(index, 1);
+            saveExpensesToFirestore(state.expense, state.budget);
+            renderExpenseTab();
+        };
+
+        window.addExpense = () => {
+            const name = prompt("消費名稱:");
+            if (!name) return;
+            const amount = prompt("花費金額 (KRW):");
+            if (!amount || isNaN(parseInt(amount))) { return; }
+            const category = prompt("消費類別 (例: 食物, 交通, 購物):", "購物");
+            
+            const newExpense = {
+                name: name.trim(),
+                amount: parseInt(amount),
+                category: category || '其他',
+                date: new Date().toLocaleDateString('zh-Hant', { month: '2-digit', day: '2-digit' }),
+            };
+            
+            state.expense.push(newExpense);
+            saveExpensesToFirestore(state.expense, state.budget);
+            renderExpenseTab();
+        };
+        
+        // --- Rendering Functions ---
+
+        const renderHeader = () => {
+            const headerEl = document.getElementById('app-header');
+            headerEl.innerHTML = `
+                <div class="h-[160px] relative bg-[var(--color-fuji-blue)] overflow-hidden rounded-b-3xl shadow-xl">
+                    <!-- Cute background (Mock with SVG/CSS for single file) -->
+                    <div class="absolute inset-0 opacity-80" style="background: linear-gradient(135deg, rgba(255,255,255,0.3) 0%, rgba(255,255,255,0) 100%);"></div>
+                    
+                    <!-- Main Content -->
+                    <div class="absolute inset-0 flex flex-col justify-end p-6">
+                        <div class="text-3xl font-bold text-white mb-1" contenteditable="true" onblur="window.handleTitleEdit(this.innerText)">${state.tripTitle}</div>
+                        <div class="text-lg text-white/90" contenteditable="true" onblur="window.handleDatesEdit(this.innerText)">${state.tripDates}</div>
+                    </div>
+
+                    <!-- Cute Cartoon Banner (Placeholder/CSS Art) -->
+                    <div class="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mt-16 -mr-8"></div>
+                    <div class="absolute top-4 right-4 text-white/90">
+                        <i class="fas fa-plane text-2xl"></i>
+                    </div>
+                </div>
+            `;
+        };
+
+        const renderBottomNav = () => {
+            const navEl = document.getElementById('bottom-nav');
+            // 底部導航實色（已改為富士藍）
+            navEl.innerHTML = `
+                <div class="flex justify-around h-16 shadow-2xl rounded-t-2xl border-t border-gray-100 p-2" style="background-color: var(--color-fuji-blue);">
+                    ${state.tabs.map(tab => `
+                        <button onclick="window.switchTab('${tab.id}')" 
+                                class="flex flex-col items-center justify-center p-1 rounded-xl transition-all duration-200 
+                                ${state.currentTab === tab.id 
+                                    ? 'bg-white text-indigo-700 shadow-md transform scale-105' 
+                                    : 'text-white/80 hover:text-white'}"
+                                style="width: 24%; max-width: 80px;">
+                            <i class="${tab.icon} text-lg mb-1"></i>
+                            <span class="text-xs font-semibold">${tab.name}</span>
+                        </button>
+                    `).join('')}
+                </div>
+            `;
+        };
+
+        const renderDaySelector = () => {
+            const selectorEl = document.getElementById('day-selector');
+            // Only render if we have itinerary data
+            if (state.itinerary.length === 0) {
+                selectorEl.innerHTML = '';
+                return;
+            }
+
+            const days = state.itinerary.map(item => item.date);
+            
+            selectorEl.innerHTML = `
+                <div class="flex overflow-x-auto space-x-2 pb-2">
+                    ${days.map(date => `
+                        <button onclick="window.switchDay('${date}')"
+                                class="flex-shrink-0 px-4 py-2 text-sm font-semibold rounded-full transition-colors duration-200 shadow-md
+                                ${state.currentDay === date 
+                                    ? 'bg-red-400 text-white shadow-red-300/50' 
+                                    : 'bg-white text-gray-700 hover:bg-gray-100'}">
+                            ${date.substring(0, 5)}
+                        </button>
+                    `).join('')}
+                    <!-- Add Day Button -->
+                    <button onclick="window.addNewDay()" 
+                            class="flex-shrink-0 w-10 h-10 bg-indigo-500 text-white rounded-full shadow-lg hover:bg-indigo-600 transition-transform transform hover:scale-105">
+                        <i class="fas fa-plus"></i>
+                    </button>
+                </div>
+            `;
+        };
+
+        const renderItineraryTab = () => {
+            const contentEl = document.getElementById('main-content');
+            const currentDayData = state.itinerary.find(d => d.date === state.currentDay);
+
+            if (!currentDayData) {
+                contentEl.innerHTML = `<div class="p-8 text-center text-gray-500">此日無行程。請在上方選擇其他日期或新增行程。</div>`;
+                return;
+            }
+
+            // Mock Weather & Attire Info
+            // Could add an API call here for real weather
+            const mockWeather = { temp: '-2°C / 5°C', condition: '晴朗/微雪', attire: '厚羽絨外套、毛帽、保暖靴', snow: '路面可能結冰' };
+
+            let html = `
+                <div class="space-y-6">
+                    <!-- Daily Weather Card -->
+                    ${renderDailyWeatherCard(mockWeather)}
+
+                    <!-- Itinerary Items -->
+                    ${currentDayData.items.map((item, index) => renderItineraryItemCard(item, index)).join('')}
+                    
+                    <!-- Add Item Button -->
+                    <div class="text-center py-4">
+                        <button onclick="window.addItemToDay()" class="px-6 py-3 bg-red-400 text-white font-bold rounded-full shadow-xl hover:bg-red-500 transition-transform transform hover:scale-105">
+                            <i class="fas fa-plus mr-2"></i> 新增行程
+                        </button>
+                    </div>
+                </div>
+            `;
+            contentEl.innerHTML = html;
+        };
+
+        const renderDailyWeatherCard = (weather) => {
+            return `
+                <div class="p-4 bg-white rounded-2xl shadow-lg border border-gray-100">
+                    <h3 class="text-lg font-bold text-gray-700 mb-3 flex items-center">
+                        <i class="fas fa-sun text-yellow-500 mr-2"></i> ${state.currentDay} 即時天氣
+                    </h3>
+                    <div class="flex justify-between items-center text-gray-600 mb-3">
+                        <span class="text-4xl font-extrabold text-indigo-600">${weather.temp.split('/')[0]}</span>
+                        <span class="text-base">${weather.condition}</span>
+                    </div>
+                    
+                    <div class="border-t pt-3 space-y-2 text-sm text-gray-600">
+                        <p class="flex items-center"><i class="fas fa-tshirt mr-2 text-red-400"></i> **建議穿著:** ${weather.attire}</p>
+                        <p class="flex items-center"><i class="fas fa-snowflake mr-2 text-blue-400"></i> **雪況提示:** ${weather.snow}</p>
+                    </div>
+                </div>
+            `;
+        };
+
+        const renderItineraryItemCard = (item, index) => {
+            const isEditing = item.isEditing || false;
+            const day = state.currentDay;
+            
+            // Photo Tip Mock
+            const photoTip = item.koreanName && item.koreanName.includes('성수') ? '小貼士：聖水區工廠感外牆適合拍工業風照片。' : '小貼士：建議在戶外庭院拍照，光線最佳。';
+
+            return `
+                <div id="item-${day}-${index}" class="bg-white p-4 rounded-2xl shadow-xl border-l-4 border-red-400/80 transition-all duration-300">
+                    <div class="flex justify-between items-start mb-2">
+                        <div class="flex items-center w-full pr-12">
+                            <i class="${getCategoryIcon(item.category)} text-xl mr-3"></i>
+                            ${isEditing ? `
+                                <input type="text" value="${item.name}" placeholder="行程名稱" class="editable-input text-lg font-bold" data-field="name">
+                            ` : `
+                                <h4 class="text-lg font-bold text-gray-800">${item.name}</h4>
+                            `}
+                        </div>
+                        <div class="absolute top-4 right-4 flex space-x-2">
+                            <button onclick="window.toggleEditItineraryItem('${day}', ${index})" 
+                                    class="w-8 h-8 rounded-full bg-gray-100 text-gray-600 hover:bg-gray-200">
+                                <i class="${isEditing ? 'fas fa-save' : 'fas fa-edit'} text-sm"></i>
+                            </button>
+                            <button onclick="window.deleteItineraryItem('${day}', ${index})" 
+                                    class="w-8 h-8 rounded-full bg-red-100 text-red-500 hover:bg-red-200">
+                                <i class="fas fa-trash-alt text-sm"></i>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="flex flex-wrap gap-2 mb-3">
+                        <!-- Category/Tags display (Simplified category input for edit) -->
+                        <span class="px-2 py-0.5 text-xs font-medium rounded-full ${getTagClasses(item.category)}">${item.category}</span>
+                        ${item.tags.map(tag => `<span class="px-2 py-0.5 text-xs font-medium rounded-full ${getTagClasses(tag)}">${tag}</span>`).join('')}
+                    </div>
+
+                    ${isEditing ? `
+                        <input type="text" value="${item.koreanName || ''}" placeholder="韓文名稱" class="editable-input" data-field="koreanName">
+                        <input type="text" value="${item.address || ''}" placeholder="地址" class="editable-input" data-field="address">
+                        <textarea placeholder="描述" class="editable-input h-16" data-field="description">${item.description || ''}</textarea>
+                    ` : `
+                        <p class="text-sm text-gray-600 mb-2">${item.description || item.koreanName}</p>
+                        ${item.address ? `<p class="text-xs text-gray-500 mb-3 flex items-center"><i class="fas fa-map-marker-alt mr-1 text-red-400"></i> ${item.address}</p>` : ''}
+                    `}
+
+                    <div class="flex justify-between items-center pt-3 border-t border-dashed border-gray-200">
+                        <!-- Navigation -->
+                        ${item.address ? `
+                            <a href="${mapUrl(item.address, item.map || 'naver')}" target="_blank" class="text-xs text-indigo-600 font-semibold hover:text-indigo-800 transition-colors">
+                                <i class="fas fa-map-pin mr-1"></i> ${item.map === 'naver' ? 'Naver 地圖導航' : 'Google 地圖導航'}
+                            </a>
+                        ` : '<span class="text-xs text-gray-400">無導航資訊</span>'}
+
+                        <!-- Interactive Buttons -->
+                        <div class="flex space-x-3 text-sm">
+                            <button class="text-gray-500 hover:text-indigo-500"><i class="fas fa-upload mr-1"></i> 旅記上傳</button>
+                            <button title="${photoTip}" class="text-gray-500 hover:text-indigo-500"><i class="fas fa-lightbulb mr-1"></i> 拍照技巧</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        };
+
+        const renderGuideTab = () => {
+            const contentEl = document.getElementById('main-content');
+            
+            // Mock Exchange Rate
+            // Real exchange rate needs external API
+            const mockRate = { 
+                KRW_HKD: 0.0058, // Mock rate: 1 KRW = 0.0058 HKD
+                lastUpdated: new Date().toLocaleTimeString('zh-Hant', {hour: '2-digit', minute:'2-digit'})
+            };
+
+            const flightHtml = state.flightInfo.map(f => `
+                <div class="flex justify-between items-center p-4 bg-white rounded-xl shadow-md border-l-4 ${f.type === 'Departure' ? 'border-indigo-400' : 'border-red-400'}">
+                    <div>
+                        <p class="font-bold text-gray-800">${f.type === 'Departure' ? '去程' : '回程'} ${f.flight}</p>
+                        <p class="text-sm text-gray-600">${f.route}</p>
+                        <p class="text-xs text-gray-500">${f.time}</p>
+                    </div>
+                    <span class="px-3 py-1 text-sm font-semibold rounded-full ${f.status === '預計準時' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}">
+                        ${f.status}
+                    </span>
+                </div>
+            `).join('');
+
+            contentEl.innerHTML = `
+                <div class="space-y-6">
+                    <!-- Exchange Rate Card -->
+                    <div class="p-4 bg-white rounded-2xl shadow-lg border border-gray-100">
+                        <h3 class="text-lg font-bold text-gray-700 mb-3 flex items-center">
+                            <i class="fas fa-exchange-alt text-blue-500 mr-2"></i> 即時對換率 (KRW/HKD)
+                        </h3>
+                        <div class="text-center">
+                            <p class="text-5xl font-extrabold text-red-400">1 KRW</p>
+                            <p class="text-3xl font-semibold text-gray-800 mt-2">≈ ${mockRate.KRW_HKD.toFixed(4)} HKD</p>
+                            <p class="text-xs text-gray-500 mt-2">匯率更新時間：${mockRate.lastUpdated} (Mock Data)</p>
+                            <button class="mt-3 text-sm text-indigo-600 font-medium hover:underline">
+                                <i class="fas fa-sync-alt mr-1"></i> 刷新匯率 (模擬)
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Flight Status Card -->
+                    <div class="p-4 bg-white rounded-2xl shadow-lg border border-gray-100 space-y-3">
+                        <h3 class="text-lg font-bold text-gray-700 flex items-center mb-3">
+                            <i class="fas fa-plane-departure text-indigo-500 mr-2"></i> 航班狀況
+                        </h3>
+                        ${flightHtml}
+                    </div>
+
+                    <!-- Map Integration Placeholder -->
+                    <div class="p-4 bg-white rounded-2xl shadow-lg border border-gray-100">
+                        <h3 class="text-lg font-bold text-gray-700 flex items-center mb-3">
+                            <i class="fas fa-map text-green-500 mr-2"></i> 韓國地圖 (Naver 優先)
+                        </h3>
+                        <div class="h-40 bg-gray-100 rounded-lg flex items-center justify-center text-sm text-gray-500">
+                            **Naver 地圖連結已嵌入行程卡片中**
+                            <br>
+                            點擊行程中的導航按鈕可開啟 Naver 地圖。
+                        </div>
+                    </div>
+                </div>
+            `;
+        };
+        
+        const renderWeatherTab = () => {
+            const contentEl = document.getElementById('main-content');
+            contentEl.innerHTML = `<div class="p-8 text-center text-gray-500">
+                <i class="fas fa-cloud-sun-rain fa-3x mb-4 text-indigo-400"></i>
+                <h3 class="text-xl font-bold mb-2">天氣預報</h3>
+                <p>這裡將顯示首爾五日天氣預報。</p>
+                <p class="text-sm mt-2">（即時天氣數據需要 API 支援）</p>
+            </div>`;
+        };
+
+        const renderExpenseTab = () => {
+            const contentEl = document.getElementById('main-content');
+            
+            const totalSpentKRW = state.expense.reduce((sum, item) => sum + item.amount, 0);
+            const remainingBudget = state.budget - totalSpentKRW;
+            const remainingBudgetHKD = remainingBudget * 0.0058; // Using mock rate
+
+            let expenseListHtml = state.expense.map((item, index) => `
+                <div class="flex justify-between items-center p-3 bg-white rounded-xl shadow-md border-l-4 border-yellow-400/80">
+                    <div class="flex-1 min-w-0">
+                        <!-- Double click to edit name -->
+                        <p class="font-bold text-gray-800 truncate" ondblclick="window.editExpenseName(${index})" id="expense-name-${index}">${item.name}</p>
+                        <p class="text-xs text-gray-500">${item.date} | ${item.category}</p>
+                    </div>
+                    <div class="flex items-center space-x-3 ml-3">
+                        <!-- Double click to edit amount -->
+                        <p class="font-bold text-red-500 min-w-[100px] text-right" ondblclick="window.editExpenseAmount(${index})" id="expense-amount-display-${index}">${formatCurrency(item.amount)}</p>
+                        <button onclick="window.deleteExpense(${index})" class="text-gray-400 hover:text-red-500 w-6 h-6"><i class="fas fa-trash-alt"></i></button>
+                    </div>
+                </div>
+            `).join('');
+
+            contentEl.innerHTML = `
+                <div class="space-y-6">
+                    <!-- Budget Overview Card -->
+                    <div class="p-4 bg-red-50 rounded-2xl shadow-lg border border-red-200">
+                        <h3 class="text-lg font-bold text-red-700 mb-2 flex items-center">
+                            <i class="fas fa-chart-pie mr-2"></i> 預算概覽
+                        </h3>
+                        <div class="grid grid-cols-2 gap-2 text-sm font-semibold">
+                            <p class="text-gray-600">總預算 (KRW)</p>
+                            <!-- Double click to edit budget -->
+                            <p class="text-right text-indigo-600" ondblclick="window.editBudget()">${formatCurrency(state.budget)}</p>
+                            <p class="text-gray-600">已花費 (KRW)</p>
+                            <p class="text-right text-red-500">${formatCurrency(totalSpentKRW)}</p>
+                            <p class="text-gray-600 border-t pt-2">剩餘預算 (KRW)</p>
+                            <p class="text-right border-t pt-2 ${remainingBudget < 0 ? 'text-red-600' : 'text-green-600'}">${formatCurrency(remainingBudget)}</p>
+                            <p class="text-gray-600">約剩餘 (HKD)</p>
+                            <p class="text-right ${remainingBudget < 0 ? 'text-red-600' : 'text-green-600'}">${formatCurrency(remainingBudgetHKD, 'HKD')}</p>
+                        </div>
+                    </div>
+
+                    <!-- Expense List -->
+                    <h3 class="text-lg font-bold text-gray-700 flex items-center">
+                        <i class="fas fa-receipt mr-2 text-yellow-500"></i> 消費紀錄
+                    </h3>
+                    <div class="space-y-3">
+                        ${expenseListHtml || '<div class="p-4 text-center text-gray-500 bg-white rounded-xl shadow-md">暫無消費紀錄</div>'}
+                    </div>
+
+                    <!-- Add Expense Button -->
+                    <div class="text-center py-4">
+                        <button onclick="window.addExpense()" class="px-6 py-3 bg-yellow-400 text-white font-bold rounded-full shadow-xl hover:bg-yellow-500 transition-transform transform hover:scale-105">
+                            <i class="fas fa-plus mr-2"></i> 新增開支
+                        </button>
+                    </div>
+                </div>
+            `;
+        };
+
+
+        // --- Main Render Function ---
+        const renderApp = () => {
+            renderHeader();
+            renderBottomNav();
+            
+            // Render specific tab content
+            document.getElementById('loading-spinner').classList.add('hidden');
+            switch (state.currentTab) {
+                case 'Itinerary':
+                    // Make sure day selector is displayed for Itinerary tab
+                    document.getElementById('day-selector').style.display = 'block';
+                    renderDaySelector();
+                    renderItineraryTab();
+                    break;
+                case 'Guide':
+                    document.getElementById('day-selector').style.display = 'none';
+                    renderGuideTab();
+                    break;
+                case 'Weather':
+                    document.getElementById('day-selector').style.display = 'none';
+                    renderWeatherTab();
+                    break;
+                case 'Expense':
+                    document.getElementById('day-selector').style.display = 'none';
+                    renderExpenseTab();
+                    break;
+            }
+        };
+
+        // --- App Start Up ---
+        const startApp = async (uid) => {
+            userId = uid;
+            isAuthReady = true;
+            
+            // 1. Setup Itinerary Listener (initial load & real-time updates)
+            onSnapshot(getItineraryRef(), (doc) => {
+                if (doc.exists()) {
+                    state.itinerary = doc.data().data || initialItineraryData;
+                    // Reset current day if it was deleted
+                    if (!state.itinerary.some(d => d.date === state.currentDay) && state.itinerary.length > 0) {
+                        state.currentDay = state.itinerary[0].date;
+                    } else if (state.itinerary.length > 0 && !state.currentDay) {
+                        state.currentDay = state.itinerary[0].date;
+                    }
+                } else {
+                    state.itinerary = initialItineraryData;
+                    saveItineraryToFirestore(initialItineraryData);
+                }
+                renderApp();
+            }, (error) => {
+                // Fallback: use hardcoded data if Firestore fails to load
+                state.itinerary = initialItineraryData;
+                renderApp();
+            });
+
+            // 2. Setup Expenses Listener
+            onSnapshot(getExpensesRef(), (doc) => {
+                if (doc.exists()) {
+                    state.expense = doc.data().expenses || [];
+                    state.budget = doc.data().budget || 500000;
+                } else {
+                    state.expense = [];
+                    state.budget = 500000;
+                    saveExpensesToFirestore(state.expense, state.budget);
+                }
+                // Only re-render if we are on the expense tab
+                if (state.currentTab === 'Expense') {
+                    renderApp();
+                }
+            }, (error) => {
+                // console.error("Error listening to expense changes:", error);
+            });
+        };
+
+        // --- Authentication Check and Firebase Initialization ---
+        // Initialize Firebase services outside of the listener's scope
+        try {
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+        } catch (e) {
+            // console.error("Firebase initialization failed:", e);
+            // Will fallback to anonymous mode if auth fails later
+        }
+
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                // User is signed in
+                await startApp(user.uid);
+            } else {
+                // No user is signed in, sign in with custom token or anonymously
+                try {
+                    if (initialAuthToken) {
+                        const credential = await signInWithCustomToken(auth, initialAuthToken);
+                        await startApp(credential.user.uid);
+                    } else {
+                        const credential = await signInAnonymously(auth);
+                        await startApp(credential.user.uid);
+                    }
+                } catch (error) {
+                    // Fallback in case of auth failure (app won't save/load data)
+                    await startApp('anonymous-failed');
+                }
+            }
+        });
+        
+        // Initial render for loading state
+        renderHeader(); 
+        
+    </script>
+</body>
+</html>
