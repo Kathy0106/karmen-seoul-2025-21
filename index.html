@@ -110,20 +110,8 @@
                 }
             }
         }
-        
-        // 新增常見貨幣列表
-        const CURRENCY_OPTIONS = [
-            { code: "HKD", name: "港幣" },
-            { code: "TWD", name: "台幣" },
-            { code: "USD", name: "美元" },
-            { code: "KRW", name: "韓圜" },
-            { code: "JPY", name: "日圓" },
-            { code: "EUR", name: "歐元" },
-        ];
 
-
-        // --- 預設行程數據 ---
-        // 保持與上一次一致
+        // --- 預設行程數據 (保持不變) ---
         const initialItinerary = [
             { date: "12/25", dayName: "Day 1", mainArea: "安國, 弘大, 延南洞, 明洞", weather: "8°C, 晴 (API載入中)",
                 dressCode: "建議: 極厚外套、圍巾、手套 (Heavy coat, scarf, gloves). 雪況: 無積雪 (No snow).",
@@ -191,8 +179,8 @@
                 inbound: { flight: "UO631", from: "首爾 (ICN)", to: "香港 (HKG)", status: "準時", departure: "12/29 18:00", arrival: "21:00" },
             },
             budget: {
-                baseCurrency: "HKD", // 記帳貨幣 (Base)
-                targetCurrency: "KRW", // 當地貨幣 (Target)
+                baseCurrency: "HKD",
+                targetCurrency: "KRW",
                 totalBudget: 5000,
                 daily: initialItinerary.map(day => ({
                     date: day.date, // MM/DD
@@ -209,7 +197,8 @@
             currentTab: 'itinerary', // 預設為行程頁面
             currentDayIndex: 0,
             tripData: defaultTripData, 
-            exchangeRate: { rate: 0.0, source: 'Loading...' },
+            // V1. 貨幣更新: 新增 status 欄位，用於顯示更清晰的匯率狀態 (loading, success, error)
+            exchangeRate: { rate: 0.0, source: '載入中...', status: 'loading' }, 
             exchangeAttempts: 0
         };
 
@@ -253,10 +242,6 @@
                             expenses: day.expenses || [] // 確保 expenses 存在
                         }));
                     }
-                    // 確保貨幣設定存在
-                    if (!data.budget.baseCurrency) data.budget.baseCurrency = defaultTripData.budget.baseCurrency;
-                    if (!data.budget.targetCurrency) data.budget.targetCurrency = defaultTripData.budget.targetCurrency;
-
                 } else {
                     console.log("No document found, setting initial data.");
                     setDoc(docRef, defaultTripData).catch(e => console.error("Error setting initial document:", e));
@@ -294,36 +279,6 @@
                 console.error("Error saving trip data:", error);
             }
         };
-        
-        // --- 新增函數：更新貨幣設定 ---
-        window.updateCurrencySettings = (type, newCode) => {
-            const newTripData = JSON.parse(JSON.stringify(state.tripData));
-            
-            if (type === 'base') {
-                // 確保目標貨幣不等於基礎貨幣
-                if (newCode === newTripData.budget.targetCurrency) {
-                     const messageBox = document.getElementById('message-box');
-                     messageBox.innerHTML = `<div class="bg-accent-red text-snow-white p-3 rounded-lg shadow-md">基礎貨幣不能與目標貨幣相同。</div>`;
-                     setTimeout(() => messageBox.innerHTML = '', 3000);
-                    return;
-                }
-                newTripData.budget.baseCurrency = newCode;
-            } else if (type === 'target') {
-                 // 確保目標貨幣不等於基礎貨幣
-                if (newCode === newTripData.budget.baseCurrency) {
-                     const messageBox = document.getElementById('message-box');
-                     messageBox.innerHTML = `<div class="bg-accent-red text-snow-white p-3 rounded-lg shadow-md">目標貨幣不能與基礎貨幣相同。</div>`;
-                     setTimeout(() => messageBox.innerHTML = '', 3000);
-                    return;
-                }
-                newTripData.budget.targetCurrency = newCode;
-            }
-
-            window.saveTripData(newTripData);
-            // 重設匯率獲取嘗試次數，並重新獲取
-            state.exchangeAttempts = 0;
-            fetchExchangeRate(); 
-        }
 
         // --- 行程日期處理函數 (保持不變) ---
 
@@ -412,29 +367,23 @@
             renderApp();
         }
 
-        // --- LLM API 呼叫：獲取即時匯率 (保持不變) ---
+        // --- LLM API 呼叫：獲取即時匯率 (貨幣更新: 調整狀態邏輯) ---
         async function fetchExchangeRate() {
             if (!state.tripData) return; // 確保有數據才執行
 
-            const base = state.tripData.budget.baseCurrency || 'HKD';
-            const target = state.tripData.budget.targetCurrency || 'KRW';
-
-            // 如果基礎貨幣和目標貨幣相同，則匯率為 1
-            if (base === target) {
-                 state.exchangeRate = { rate: 1.0, source: 'Internal (Base = Target)' };
-                 if (state.currentTab === 'guide' || state.currentTab === 'budget') renderApp();
-                 return;
-            }
-
             if (state.exchangeAttempts >= 3) {
-                state.exchangeRate = { rate: 0.0, source: `無法獲取 (${base} -> ${target})` }; // 失敗後也設置 rate 為 0
+                // V2. 貨幣更新: 達到最大重試次數，將狀態設置為 error
+                state.exchangeRate = { rate: 0.0, source: '無法載入 (請檢查網路)', status: 'error' }; 
                 if (state.currentTab === 'guide' || state.currentTab === 'budget') renderApp();
                 return;
             }
             state.exchangeAttempts++;
-            state.exchangeRate = { rate: 0.0, source: 'Loading...' };
+            // V2. 貨幣更新: 設置為 loading 狀態
+            state.exchangeRate = { rate: 0.0, source: '載入中...', status: 'loading' }; 
             if (state.currentTab === 'guide' || state.currentTab === 'budget') renderApp(); // 重新渲染 loading 狀態
 
+            const base = state.tripData.budget.baseCurrency || 'HKD';
+            const target = state.tripData.budget.targetCurrency || 'KRW';
             const userQuery = `What is the current exchange rate from ${base} to ${target}? Provide only the rate and the source name.`;
             const apiKey = ""
             const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
@@ -462,16 +411,22 @@
                     const rate = parseFloat(parts[0]);
                     const source = parts[1];
                     if (!isNaN(rate) && rate > 0) {
-                        state.exchangeRate = { rate, source: source.substring(0, 30) + (source.length > 30 ? '...' : '') };
+                        // V2. 貨幣更新: 設置為 success 狀態
+                        state.exchangeRate = { rate, source: source.substring(0, 30) + (source.length > 30 ? '...' : ''), status: 'success' };
                     } else {
                         throw new Error("Invalid rate format received or rate is zero.");
                     }
                 } else {
                     throw new Error("Unexpected API response format.");
                 }
+                state.exchangeAttempts = 0; // 成功後重置
 
             } catch (error) {
                 console.error("Error fetching exchange rate:", error);
+                // V2. 貨幣更新: 設置為 error 狀態
+                state.exchangeRate.status = 'error'; 
+                state.exchangeRate.source = '載入失敗，重試中...';
+
                 // Exponential backoff simulation (simplified)
                 await new Promise(resolve => setTimeout(resolve, 1000 * state.exchangeAttempts));
                 fetchExchangeRate(); // Retry
@@ -486,6 +441,8 @@
             state.currentTab = tab;
             renderApp();
             if (tab === 'guide' || tab === 'budget') {
+                // 進入指南或預算頁面時，強制更新匯率
+                state.exchangeAttempts = 0; // 重設嘗試次數
                 fetchExchangeRate(); 
             }
         }
@@ -516,14 +473,10 @@
             const modal = document.getElementById('edit-budget-modal');
             const dailyBudgetInput = document.getElementById('edit-daily-budget');
             const totalBudgetInput = document.getElementById('edit-total-budget');
-            const currencyDisplay = document.getElementById('edit-budget-currency-display');
-            
-            const baseCurrency = state.tripData.budget.baseCurrency;
 
             if (currentDay && state.tripData) {
                 dailyBudgetInput.value = currentDay.budget;
                 totalBudgetInput.value = state.tripData.budget.totalBudget;
-                currencyDisplay.textContent = `(${baseCurrency})`;
                 modal.classList.remove('hidden');
             }
         }
@@ -553,32 +506,68 @@
             closeEditBudgetModal();
         }
         
-        // --- 新增消費 Modal (保持不變) ---
+        // --- 新增消費 Modal (貨幣更新: 增加即時換算提示邏輯) ---
+        
+        /** V3. 貨幣更新: 根據輸入的當地金額和匯率，更新換算為 HKD 的提示文字。 */
+        window.updateConversionHint = () => {
+            const amountInput = document.getElementById('expense-amount');
+            const currencySelect = document.getElementById('expense-currency');
+            const hintElement = document.getElementById('conversion-hint');
+            
+            const amountLocal = parseFloat(amountInput.value);
+            const currency = currencySelect.value;
+            const baseCurrency = state.tripData.budget.baseCurrency; // HKD
+            const targetCurrency = state.tripData.budget.targetCurrency; // KRW
+            const rate = state.exchangeRate.rate;
+            
+            hintElement.textContent = ''; // 預設清空
+            hintElement.className = 'text-xs mt-1 h-4'; // 重置樣式
+
+            if (isNaN(amountLocal) || amountLocal <= 0) return;
+
+            if (currency === targetCurrency) {
+                if (rate > 0) {
+                    // KRW -> HKD: amountLocal / rate
+                    const amountHKD = (amountLocal / rate).toFixed(2);
+                    hintElement.textContent = `≈ ${amountHKD} ${baseCurrency} (依當前匯率)`;
+                    hintElement.classList.add('text-gray-600', 'font-medium');
+                } else {
+                    hintElement.textContent = '匯率載入中或無效，無法換算！';
+                    hintElement.classList.add('text-accent-red');
+                }
+            }
+            // 如果輸入 HKD，則不需要提示換算
+        }
+        
         function openAddExpenseModal(dayIndex) {
             const modal = document.getElementById('add-expense-modal');
-            const baseCurrency = state.tripData.budget.baseCurrency; // HKD (now dynamic)
-            const targetCurrency = state.tripData.budget.targetCurrency; // KRW (now dynamic)
+            const baseCurrency = state.tripData.budget.baseCurrency; // HKD
+            const targetCurrency = state.tripData.budget.targetCurrency; // KRW
             const rate = state.exchangeRate.rate;
             
             // 清空並設定預設值
             document.getElementById('expense-amount').value = '';
             document.getElementById('expense-notes').value = '';
             document.getElementById('expense-category').value = '食物';
-            document.getElementById('expense-currency').value = targetCurrency; // 預設為當地貨幣 Target
+            document.getElementById('expense-currency').value = targetCurrency; // 預設為當地貨幣 KRW
             document.getElementById('modal-day-name').textContent = state.tripData.itinerary[dayIndex].dayName;
             
-            // 更新匯率顯示
-            const rateDisplay = rate > 0 ? `${rate.toFixed(2)} ${targetCurrency}` : '載入中...';
-            document.getElementById('modal-exchange-rate').textContent = `1 ${baseCurrency} ≈ ${rateDisplay}`;
+            // V3. 貨幣更新: 匯率顯示調整，利用 status 決定顯示內容
+            const rateDisplay = rate > 0 && state.exchangeRate.status === 'success' ? `${rate.toFixed(2)} ${targetCurrency}` : state.exchangeRate.source;
+            const rateStatusIcon = state.exchangeRate.status === 'success' ? 'check-circle' : (state.exchangeRate.status === 'loading' ? 'loader' : 'alert-triangle');
+            const rateStatusColor = state.exchangeRate.status === 'success' ? 'text-accent-green' : (state.exchangeRate.status === 'loading' ? 'text-accent-yellow animate-spin' : 'text-accent-red');
             
-            // 更新貨幣選項
-            const currencySelect = document.getElementById('expense-currency');
-            currencySelect.innerHTML = `<option value="${targetCurrency}">${targetCurrency} (${CURRENCY_OPTIONS.find(c => c.code === targetCurrency)?.name || '當地貨幣'})</option>
-                                       <option value="${baseCurrency}">${baseCurrency} (${CURRENCY_OPTIONS.find(c => c.code === baseCurrency)?.name || '基礎貨幣'})</option>`;
-            
+            document.getElementById('modal-exchange-rate-container').innerHTML = `
+                <i data-lucide="${rateStatusIcon}" class="w-3 h-3 inline mr-1 ${rateStatusColor}"></i>
+                <span class="font-semibold">1 ${baseCurrency} ≈ ${rateDisplay}</span>
+            `;
+
             // 將 currentDayIndex 暫存到按鈕上
             document.getElementById('save-expense-btn').setAttribute('data-day-index', dayIndex);
             
+            // 確保首次打開時更新提示
+            window.updateConversionHint(); 
+            lucide.createIcons(); // 重新渲染圖標
             modal.classList.remove('hidden');
         }
         
@@ -601,34 +590,35 @@
             }
 
             const rate = state.exchangeRate.rate;
-            let amountBase = 0; // 統一使用 amountBase 代替 amountHKD
-            const baseCurrency = state.tripData.budget.baseCurrency; // Base Currency
-            const targetCurrency = state.tripData.budget.targetCurrency; // Target Currency
+            let amountHKD = 0;
+            const baseCurrency = state.tripData.budget.baseCurrency; // HKD
+            const targetCurrency = state.tripData.budget.targetCurrency; // KRW
 
             if (currency === targetCurrency && rate <= 0) {
                  const messageBox = document.getElementById('message-box');
-                 messageBox.innerHTML = `<div class="bg-accent-red text-snow-white p-3 rounded-lg shadow-md">匯率載入失敗 (${rate.toFixed(2)}), 無法準確轉換 ${targetCurrency}。請稍後重試。</div>`;
+                 // 貨幣更新: 錯誤提示更清晰
+                 messageBox.innerHTML = `<div class="bg-accent-red text-snow-white p-3 rounded-lg shadow-md">匯率無效 (${state.exchangeRate.source})，無法準確轉換 ${targetCurrency}。請稍後重試。</div>`;
                  setTimeout(() => messageBox.innerHTML = '', 4000);
                  return; // 匯率無效時，立即退出
             }
 
-            // 換算邏輯 (1 Base = X Target)
+            // 換算邏輯 (1 HKD = X KRW)
             if (currency === targetCurrency) {
-                // Target -> Base: Target金額 / (Target/Base 匯率) 
-                amountBase = amountLocal / rate; 
+                // KRW -> HKD: 韓圜金額 / (KRW/HKD 匯率) 
+                amountHKD = amountLocal / rate; 
             } else if (currency === baseCurrency) {
-                // Base -> Base: 無需換算
-                amountBase = amountLocal;
+                // HKD -> HKD: 無需換算
+                amountHKD = amountLocal;
             } else {
-                // 其他情況 (未預期，暫時視為 Base)
-                amountBase = amountLocal;
+                // 其他情況 (未預期，暫時視為 HKD)
+                amountHKD = amountLocal;
             }
 
             const newExpense = {
                 id: Date.now(), // 唯一ID
                 amountLocal: amountLocal,
                 currency: currency,
-                amountHKD: parseFloat(amountBase.toFixed(2)), // 實際儲存的是 Base Currency 的金額
+                amountHKD: parseFloat(amountHKD.toFixed(2)), // 限制兩位小數
                 category: category,
                 notes: notes,
                 timestamp: new Date().toISOString()
@@ -714,7 +704,6 @@
             const itinerary = state.tripData.itinerary;
             const currentDay = itinerary[state.currentDayIndex];
             const dailyBudget = state.tripData.budget.daily[state.currentDayIndex];
-            const currency = state.tripData.budget.baseCurrency; // 使用基礎貨幣
             
             // 獲取年份
             const tripYear = state.tripData.dates.substring(0, 4);
@@ -749,7 +738,7 @@
 
                     <!-- 每日預算 -->
                     <div class="flex justify-between items-center text-sm font-semibold p-3 bg-warm-gray rounded-lg">
-                        <span class="text-fuji-blue">預算餘額 (${currency})：</span>
+                        <span class="text-fuji-blue">預算餘額 (${state.tripData.budget.baseCurrency})：</span>
                         <span class="${daySpent > dailyBudget.budget ? 'text-accent-red' : 'text-accent-green'}">
                              $${(dailyBudget.budget - daySpent).toFixed(0)} / $${dailyBudget.budget.toFixed(0)}
                         </span>
@@ -867,8 +856,6 @@
 
             const f = state.tripData.flights;
             const tripYear = state.tripData.dates.substring(0, 4);
-            const baseCurrency = state.tripData.budget.baseCurrency;
-            const targetCurrency = state.tripData.budget.targetCurrency;
             
             // --- 1. 每日天氣預報卡片 (更新為網格佈局) ---
             const weatherGridItems = state.tripData.itinerary.map(day => {
@@ -907,15 +894,8 @@
                 </div>
             `;
 
-            // Fix: 匯率為 0 時顯示載入中
-            const rateDisplay = state.exchangeRate.rate === 0.0 ? state.exchangeRate.source : state.exchangeRate.rate.toFixed(2);
             
-            // 貨幣選擇器選項
-            const currencyOptionsHtml = (currentCode) => CURRENCY_OPTIONS.map(opt => `
-                <option value="${opt.code}" ${opt.code === currentCode ? 'selected' : ''}>${opt.code} (${opt.name})</option>
-            `).join('');
-
-            // --- 2. 航班卡片 ---
+            // --- 2. 航班卡片 (保持不變) ---
             const flightCard = (type, data) => `
                 <div class="p-4 rounded-xl bg-snow-white shadow-lg mb-4 border-l-4 ${type === 'outbound' ? 'border-accent-red' : 'border-fuji-blue'}">
                     <div class="flex items-center justify-between mb-2">
@@ -934,29 +914,47 @@
                 </div>
             `;
             
-            <!-- ** 已修復的即時對換率卡片 (核心修復位置) ** -->
-        <div class="bg-white p-6 rounded-xl shadow-xl border-l-4 border-green-500">
-            <h2 class="text-xl font-bold text-gray-800 mb-3 flex items-center">
-                <svg class="w-6 h-6 mr-2 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-2.485 0-4 1.5-4 3.5s1.515 3.5 4 3.5 4-1.5 4-3.5S14.485 8 12 8zM12 2a10 10 0 100 20 10 10 0 000-20z"></path></svg>
-                即時對換率 (HKD/KRW)
-            </h2>
-            
-            <!-- 匯率顯示區域 -->
-            <div id="exchange-rate-display" class="text-4xl font-extrabold text-gray-900 mb-2">
-                正在加載中...
-            </div>
-            
-            <!-- 資料來源/狀態顯示區域 -->
-            <p class="text-sm text-gray-500" id="last-updated">
-                資料來源: 初始化中...
-            </p>
+            // V4. 貨幣更新: 匯率卡片改為使用 status 邏輯
+            const rate = state.exchangeRate.rate;
+            const rateSource = state.exchangeRate.source;
+            let rateDisplay;
+            let rateColor;
+            let rateIcon;
 
-            <button onclick="fetchExchangeRate()" class="mt-4 px-3 py-1 bg-green-500 text-white font-semibold rounded-lg shadow-md hover:bg-green-600 transition duration-200 text-sm">
-                重新整理匯率
-            </button>
-        </div>
+            if (state.exchangeRate.status === 'success') {
+                rateDisplay = rate.toFixed(2);
+                rateColor = 'text-fuji-blue';
+                rateIcon = 'check-circle';
+            } else if (state.exchangeRate.status === 'loading') {
+                rateDisplay = '載入中...';
+                rateColor = 'text-accent-yellow';
+                rateIcon = 'loader';
+            } else { // error
+                rateDisplay = '無法載入';
+                rateColor = 'text-accent-red';
+                rateIcon = 'alert-triangle';
+            }
 
-            // --- 4. 地圖卡片 ---
+            // --- 3. 匯率卡片 ---
+            const exchangeRateCard = `
+                <div class="p-4 rounded-xl bg-snow-white shadow-lg mb-4 border-t-4 border-accent-yellow">
+                    <h3 class="text-lg font-bold text-gray-700 mb-2 flex items-center"><i data-lucide="dollar-sign" class="w-5 h-5 mr-2 text-accent-yellow"></i> 即時對換率</h3>
+                    <div class="flex items-center space-x-2">
+                        <i data-lucide="${rateIcon}" class="w-6 h-6 ${rateColor} ${state.exchangeRate.status === 'loading' ? 'animate-spin' : ''}"></i>
+                        <div class="text-3xl font-extrabold ${rateColor}">
+                            1 ${state.tripData.budget.baseCurrency} = ${rateDisplay} ${state.tripData.budget.targetCurrency}
+                        </div>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-2">
+                        資料來源: ${rateSource}
+                        <button class="text-fuji-blue/70 hover:underline ml-2" onclick="fetchExchangeRate()" aria-label="重新整理匯率">
+                            <i data-lucide="rotate-cw" class="w-3 h-3 inline"></i>
+                        </button>
+                    </p>
+                </div>
+            `;
+
+            // --- 4. 地圖卡片 (保持不變) ---
             const mapLinkCard = `
                 <div class="p-4 rounded-xl bg-snow-white shadow-lg mb-4 border-r-4 border-accent-green">
                     <h3 class="text-lg font-bold text-gray-700 mb-2 flex items-center"><i data-lucide="map-pin" class="w-5 h-5 mr-2 text-accent-green"></i> 韓國首爾地圖</h3>
@@ -967,7 +965,7 @@
                 </div>
             `;
             
-            // --- 5. 用戶 ID 卡片 ---
+            // --- 5. 用戶 ID 卡片 (保持不變) ---
              const userIdCard = `
                 <div class="p-4 rounded-xl bg-snow-white shadow-lg mb-4 border-b-4 border-warm-gray">
                     <h3 class="text-sm font-bold text-gray-700 mb-2 flex items-center"><i data-lucide="user" class="w-4 h-4 mr-2 text-fuji-blue"></i> 用戶 ID (分享/除錯用)</h3>
@@ -980,9 +978,9 @@
                 <div class="p-4 pb-20">
                     <h2 class="text-xl font-bold text-fuji-blue mb-4">旅行指南與資訊</h2>
                     ${weatherCard}
-                    ${exchangeRateCard}
                     ${flightCard('outbound', f.outbound)}
                     ${flightCard('inbound', f.inbound)}
+                    ${exchangeRateCard}
                     ${mapLinkCard}
                     ${userIdCard}
                 </div>
@@ -994,10 +992,9 @@
 
             const budgetData = state.tripData.budget;
             const dailyData = budgetData.daily;
-            const currency = budgetData.baseCurrency; // 基礎貨幣
-            const targetCurrency = budgetData.targetCurrency; // 目標貨幣
+            const currency = budgetData.baseCurrency; // HKD
 
-            // 計算總花費 (從所有 expenses 的 amountHKD 總和，現實質上是 Base Currency)
+            // 計算總花費 (從所有 expenses 的 amountHKD 總和)
             const totalSpent = dailyData.reduce((acc, day) => {
                 const daySpent = day.expenses.reduce((sum, exp) => sum + exp.amountHKD, 0);
                 return acc + daySpent;
@@ -1037,16 +1034,17 @@
                         const expenseDetail = day.expenses.map(exp => {
                              const iconName = categoryIcons[exp.category] || 'map-pin';
                              return `
-                                <div class="flex justify-between items-center text-xs py-2 border-b border-warm-gray last:border-b-0">
-                                    <div class="flex items-center space-x-2 w-1/2">
-                                        <i data-lucide="${iconName}" class="w-3 h-3 text-fuji-blue"></i>
-                                        <span class="truncate">${exp.notes || exp.category}</span>
+                                 <!-- V5. 貨幣更新: 調整列表顯示，讓兩種貨幣金額更清晰 -->
+                                <div class="flex justify-between items-center text-sm py-2 border-b border-warm-gray last:border-b-0">
+                                    <div class="flex items-center space-x-2 w-1/3">
+                                        <i data-lucide="${iconName}" class="w-4 h-4 text-fuji-blue"></i>
+                                        <span class="truncate text-gray-800">${exp.notes || exp.category}</span>
                                     </div>
-                                    <div class="text-right font-semibold w-1/4 text-gray-700">
-                                        ${exp.amountLocal.toFixed(0)} ${exp.currency}
+                                    <div class="text-right font-medium w-1/3 text-gray-600">
+                                        ${exp.amountLocal.toFixed(0)} <span class="text-xs font-bold">${exp.currency}</span>
                                     </div>
-                                    <div class="text-right font-bold w-1/4 text-gray-800">
-                                        $${exp.amountHKD.toFixed(1)} ${currency}
+                                    <div class="text-right font-extrabold w-1/3 text-gray-900">
+                                        $${exp.amountHKD.toFixed(1)} <span class="text-xs font-bold">${currency}</span>
                                     </div>
                                 </div>
                             `;
@@ -1073,16 +1071,16 @@
                                     <div class="${isCurrentDay ? 'block' : 'hidden'} mt-4">
                                         <button onclick="openAddExpenseModal(${index})" class="w-full bg-accent-yellow hover:bg-accent-yellow/80 text-gray-900 text-sm py-2 px-4 rounded-full font-bold shadow-md transition-colors flex items-center justify-center mb-4">
                                             <i data-lucide="wallet" class="w-4 h-4 inline mr-2"></i>
-                                            新增今日消費 (${targetCurrency})
+                                            新增今日消費 (${state.tripData.budget.targetCurrency})
                                         </button>
                                         
                                         <!-- 消費紀錄詳細列表 -->
                                         ${day.expenses.length > 0 ? `
                                             <div class="mt-4 p-3 bg-warm-gray rounded-lg">
                                                 <div class="flex justify-between items-center text-xs font-bold text-gray-500 mb-2 border-b border-gray-300 pb-1">
-                                                    <span class="w-1/2">項目</span>
-                                                    <span class="w-1/4 text-right">${targetCurrency}</span>
-                                                    <span class="w-1/4 text-right">${currency}</span>
+                                                    <span class="w-1/3">項目</span>
+                                                    <span class="w-1/3 text-right">當地(${state.tripData.budget.targetCurrency})</span>
+                                                    <span class="w-1/3 text-right">基地(${currency})</span>
                                                 </div>
                                                 ${expenseDetail}
                                             </div>
@@ -1186,7 +1184,6 @@
         window.fetchExchangeRate = fetchExchangeRate;
         window.openAddExpenseModal = openAddExpenseModal;
         window.closeAddExpenseModal = closeAddExpenseModal;
-        window.updateCurrencySettings = updateCurrencySettings; // 暴露新函數
     </script>
 
     <style>
@@ -1282,12 +1279,12 @@
             <h3 class="text-xl font-bold text-fuji-blue mb-4">編輯預算</h3>
             
             <div class="mb-4">
-                <label for="edit-total-budget" class="block text-sm font-medium text-gray-700 mb-1">總預算 <span id="edit-budget-currency-display"> (HKD)</span></label>
+                <label for="edit-total-budget" class="block text-sm font-medium text-gray-700 mb-1">總預算 (HKD)</label>
                 <input type="number" id="edit-total-budget" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-fuji-blue focus:border-fuji-blue transition" min="100" />
             </div>
             
             <div class="mb-6">
-                <label for="edit-daily-budget" class="block text-sm font-medium text-gray-700 mb-1">當日預算 <span id="edit-budget-currency-display"> (HKD)</span></label>
+                <label for="edit-daily-budget" class="block text-sm font-medium text-gray-700 mb-1">當日預算 (HKD)</label>
                 <input type="number" id="edit-daily-budget" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-fuji-blue focus:border-fuji-blue transition" min="100" />
             </div>
             
@@ -1302,20 +1299,27 @@
         </div>
     </div>
     
-    <!-- 新增消費 Modal -->
+    <!-- 新增消費 Modal (貨幣更新: 增加 oninput/onchange 事件和提示欄) -->
     <div id="add-expense-modal" class="modal fixed inset-0 bg-gray-900 bg-opacity-75 z-40 flex items-center justify-center hidden">
         <div class="bg-snow-white p-6 rounded-2xl shadow-2xl w-11/12 max-w-sm transform scale-100 transition-transform card-japanese">
             <h3 class="text-xl font-bold text-fuji-blue mb-2">新增消費 - <span id="modal-day-name"></span></h3>
-            <p id="modal-exchange-rate" class="text-xs text-gray-500 mb-4">匯率: 1 HKD ≈ 載入中...</p>
+            
+            <!-- V3. 貨幣更新: 匯率狀態 container -->
+            <p id="modal-exchange-rate-container" class="text-xs text-gray-500 mb-4 flex items-center">
+                <!-- 內容由 JS 填充 -->
+            </p>
             
             <div class="mb-4">
                 <label for="expense-amount" class="block text-sm font-medium text-gray-700 mb-1">金額</label>
                 <div class="flex">
-                    <input type="number" id="expense-amount" class="flex-1 p-3 border border-gray-300 rounded-l-lg focus:ring-fuji-blue focus:border-fuji-blue transition" min="1" />
-                    <!-- 貨幣選項會由 JS 動態更新，包含 Base 和 Target Currency -->
-                    <select id="expense-currency" class="p-3 border border-gray-300 border-l-0 rounded-r-lg bg-warm-gray font-semibold">
+                    <input type="number" id="expense-amount" oninput="updateConversionHint()" class="flex-1 p-3 border border-gray-300 rounded-l-lg focus:ring-fuji-blue focus:border-fuji-blue transition" min="1" />
+                    <select id="expense-currency" onchange="updateConversionHint()" class="p-3 border border-gray-300 border-l-0 rounded-r-lg bg-warm-gray font-semibold">
+                        <option value="KRW">KRW (韓圜)</option>
+                        <option value="HKD">HKD (港幣)</option>
                     </select>
                 </div>
+                <!-- V3. 貨幣更新: 即時換算提示 -->
+                <p id="conversion-hint" class="text-xs text-gray-500 mt-1 h-4 pl-1"></p>
             </div>
             
             <div class="mb-4">
