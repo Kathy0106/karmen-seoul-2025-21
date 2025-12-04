@@ -934,39 +934,27 @@
                 </div>
             `;
             
-            // --- 3. 匯率卡片 (更新為包含選擇器) ---
-            const exchangeRateCard = `
-                <div class="p-4 rounded-xl bg-snow-white shadow-lg mb-4 border-t-4 border-accent-yellow">
-                    <h3 class="text-lg font-bold text-gray-700 mb-2 flex items-center"><i data-lucide="dollar-sign" class="w-5 h-5 mr-2 text-accent-yellow"></i> 貨幣設定與即時對換率</h3>
-                    
-                    <div class="space-y-3 mb-4">
-                        <!-- 基礎貨幣選擇 -->
-                        <div>
-                            <label class="text-sm font-medium text-gray-600 mb-1 block">記帳基礎貨幣 (Base)</label>
-                            <select onchange="updateCurrencySettings('base', this.value)" class="w-full p-2 border border-gray-300 rounded-lg bg-warm-gray">
-                                ${currencyOptionsHtml(baseCurrency)}
-                            </select>
-                        </div>
-                        <!-- 目標貨幣選擇 -->
-                        <div>
-                            <label class="text-sm font-medium text-gray-600 mb-1 block">當地目標貨幣 (Target)</label>
-                            <select onchange="updateCurrencySettings('target', this.value)" class="w-full p-2 border border-gray-300 rounded-lg bg-warm-gray">
-                                ${currencyOptionsHtml(targetCurrency)}
-                            </select>
-                        </div>
-                    </div>
+            <!-- ** 已修復的即時對換率卡片 (核心修復位置) ** -->
+        <div class="bg-white p-6 rounded-xl shadow-xl border-l-4 border-green-500">
+            <h2 class="text-xl font-bold text-gray-800 mb-3 flex items-center">
+                <svg class="w-6 h-6 mr-2 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-2.485 0-4 1.5-4 3.5s1.515 3.5 4 3.5 4-1.5 4-3.5S14.485 8 12 8zM12 2a10 10 0 100 20 10 10 0 000-20z"></path></svg>
+                即時對換率 (HKD/KRW)
+            </h2>
+            
+            <!-- 匯率顯示區域 -->
+            <div id="exchange-rate-display" class="text-4xl font-extrabold text-gray-900 mb-2">
+                正在加載中...
+            </div>
+            
+            <!-- 資料來源/狀態顯示區域 -->
+            <p class="text-sm text-gray-500" id="last-updated">
+                資料來源: 初始化中...
+            </p>
 
-                    <div class="text-3xl font-extrabold text-fuji-blue mt-4 border-t border-gray-200 pt-3">
-                        1 ${baseCurrency} = ${rateDisplay} ${targetCurrency}
-                    </div>
-                    <p class="text-xs text-gray-500 mt-2">
-                        資料來源: ${state.exchangeRate.source}
-                        <button class="text-fuji-blue/70 hover:underline ml-2" onclick="fetchExchangeRate()" aria-label="重新整理匯率">
-                            <i data-lucide="rotate-cw" class="w-3 h-3 inline"></i>
-                        </button>
-                    </p>
-                </div>
-            `;
+            <button onclick="fetchExchangeRate()" class="mt-4 px-3 py-1 bg-green-500 text-white font-semibold rounded-lg shadow-md hover:bg-green-600 transition duration-200 text-sm">
+                重新整理匯率
+            </button>
+        </div>
 
             // --- 4. 地圖卡片 ---
             const mapLinkCard = `
