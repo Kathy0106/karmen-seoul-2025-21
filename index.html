@@ -19,31 +19,10 @@
         // 全域變數檢查 (由 Canvas 環境提供)
         // 為了在 GitHub 上運行，我們需要一個默認的 appId
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'seoul-xmas-trip-v2';
-       
-        // ... (程式碼開頭)
-<script type="module">
-       import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-       // ... (其他導入)
-       // 設定 Firebase 日誌級別
-       setLogLevel('debug');
-       // 全域變數檢查 (由 Canvas 環境提供)
-       // 為了在 GitHub 上運行，我們需要一個默認的 appId
-       const appId = typeof __app_id !== 'undefined' ? __app_id : 'seoul-xmas-trip-v2';
-       // ----------------------------------------------------
-       // IMPORTANT: 手動輸入你的 Firebase Config 以便在 GitHub 上運行
-       // **請務必使用你在專案設定中複製的真實配置來替換以下整個物件！**
-       // ----------------------------------------------------
-       const firebaseConfig = {
-           apiKey: "AIzaSy_ABCDEFG1234567890", // <--- 替換你的金鑰
-           authDomain: "seoul-xmas-trip-2025.firebaseapp.com", // <--- 替換你的域名
-           projectId: "seoul-xmas-trip-2025", // <--- 替換你的專案 ID
-           storageBucket: "seoul-xmas-trip-2025.appspot.com", // <--- 替換你的儲存區
-           messagingSenderId: "9876543210", // <--- 替換你的 ID
-           appId: "1:9876543210:web:abcdef123456", // <--- 替換你的 App ID
-           measurementId: "G-ABCDEFG" // <--- 替換你的測量 ID (如果有的話)
-       };
-       const initialAuthToken = null;
-// ... (程式碼結尾)
+        // 如果你沒有使用 Canvas，你可能需要將你的 Firebase Config 寫在這裡
+        // 例如：const firebaseConfig = { apiKey: "...", authDomain: "...", ... };
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
         let db = null;
         let auth = null;
