@@ -1,1255 +1,406 @@
-<!DOCTYPE html>
-<html lang="zh-Hant">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>首爾聖誕旅行</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@400;700&display=swap" rel="stylesheet">
-    <script src="https://unpkg.com/lucide@latest"></script>
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import React, { useState, useEffect, useCallback } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, doc, collection, onSnapshot, setDoc, deleteDoc, query, orderBy, serverTimestamp, setLogLevel } from 'firebase/firestore';
+import { LucideLogOut, LucideUserPlus, LucideLogIn, LucideSend, LucideTrash2, LucideCalendar } from 'lucide-react';
 
-        // 設定 Firebase 日誌級別
-        setLogLevel('debug');
+// ----------------------------------------------------------------------
+// ⚠️ 你的 Firebase 配置資訊 (已根據你提供的資料填寫) 
+// ----------------------------------------------------------------------
+const firebaseConfig = {
+  apiKey: "AIzaSyCUXPfj2Jhb5XYo9WXoAOEBvoiSqsJevaM",
+  authDomain: "seoul-trip-fba4f.firebaseapp.com",
+  projectId: "seoul-trip-fba4f",
+  storageBucket: "seoul-trip-fba4f.firebasestorage.app",
+  messagingSenderId: "653263885176",
+  appId: "1:653263885176:web:43c5d546e6ac826261ee8d",
+  measurementId: "G-XXTWKBSC7J"
+};
 
-        // 全域變數檢查 (由 Canvas 環境提供)
-        // 為了在 GitHub 上運行，我們需要一個默認的 appId
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'seoul-xmas-trip-v2';
-        // 如果你沒有使用 Canvas，你可能需要將你的 Firebase Config 寫在這裡
-        // 例如：const firebaseConfig = { apiKey: "...", authDomain: "...", ... };
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+// 由於 Canvas 環境會提供，但在本地運行時可能沒有，我們設定預設值
+const __app_id = 'seoul-xmas-trip-v2';
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const initialAuthToken = null; // 暫時不需要使用 custom token
 
-        let db = null;
-        let auth = null;
-        let userId = 'local-user'; // 預設使用 local-user ID
-        let isAuthReady = false;
+// ----------------------------------------------------------------------
+// Firestore 路徑定義 (使用私有資料路徑)
+// ----------------------------------------------------------------------
 
-        // 模擬的 Naver Map 連結函數
-        window.getNaverMapUrl = (address) => {
-            const baseUrl = 'https://map.naver.com/v5/search/';
-            return baseUrl + encodeURIComponent(address);
-        };
-        
-        // ----------------------------------------------------
-        // IMPORTANT: 將 loadTripData 提升到 window 作用域，並確保它能獲取 db/auth/userId
-        // ----------------------------------------------------
-        window.initFirebase = async () => {
-            try {
-                if (!firebaseConfig) {
-                    console.warn("Firebase config is missing. App will only use default local data.");
-                    isAuthReady = true;
-                    // 如果沒有 config，直接返回，App 會保持顯示預設數據
-                    // 在 GitHub Pages 上，你需要確保 firebaseConfig 是可用的
-                    return; 
-                }
-                
-                const app = initializeApp(firebaseConfig);
-                db = getFirestore(app);
-                auth = getAuth(app);
+/**
+ * 構建 Firestore 中用戶私人行程文件的路徑。
+ * 格式: /artifacts/{appId}/users/{userId}/trip_plans/{docId}
+ * 這裡我們使用一個固定的 document ID: 'my_seoul_trip'
+ */
+const TRIP_DOC_PATH = (userId) => ({
+    collectionPath: `artifacts/${appId}/users/${userId}/trip_data`,
+    docId: 'my_seoul_trip'
+});
 
-                // 嘗試使用提供的 token 登入，否則匿名登入
-                if (initialAuthToken) {
-                    await signInWithCustomToken(auth, initialAuthToken);
+// ----------------------------------------------------------------------
+// 主應用程式組件
+// ----------------------------------------------------------------------
+
+const App = () => {
+    const [db, setDb] = useState(null);
+    const [auth, setAuth] = useState(null);
+    const [userId, setUserId] = useState(null);
+    const [isAuthReady, setIsAuthReady] = useState(false);
+    
+    // 認證狀態
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [authMode, setAuthMode] = useState('login'); // 'login' or 'register'
+    const [authError, setAuthError] = useState('');
+
+    // 行程資料狀態
+    const [plan, setPlan] = useState(null); // 整個旅行計畫文件
+    const [newItemText, setNewItemText] = useState('');
+    const [loading, setLoading] = useState(true);
+    const [dataError, setDataError] = useState('');
+
+
+    // 1. 初始化 Firebase 和認證
+    useEffect(() => {
+        try {
+            // 啟用 Firebase 日誌以幫助除錯
+            setLogLevel('debug');
+            
+            const app = initializeApp(firebaseConfig);
+            const firebaseAuth = getAuth(app);
+            const firestoreDb = getFirestore(app);
+
+            setAuth(firebaseAuth);
+            setDb(firestoreDb);
+
+            // 設置認證狀態監聽器
+            const unsubscribe = onAuthStateChanged(firebaseAuth, (user) => {
+                if (user) {
+                    setUserId(user.uid);
+                    // 為了多用戶識別，顯示完整的 UID
+                    console.log('User signed in:', user.uid); 
                 } else {
-                    await signInAnonymously(auth);
+                    setUserId(null);
+                    setPlan(null);
+                    console.log('User signed out.');
                 }
+                setIsAuthReady(true);
+            });
 
-                // 【多用戶儲存】監聽驗證狀態變化，獲取唯一的 userId
-                onAuthStateChanged(auth, (user) => {
-                    if (user) {
-                        userId = user.uid; // 使用 Firebase 提供的唯一 ID
-                        console.log("Firebase Auth Ready. User ID:", userId);
-                    } else {
-                        // 匿名登入失敗或登出，使用隨機 ID 作為假 UID 
-                        userId = crypto.randomUUID();
-                    }
-                    isAuthReady = true;
-                    
-                    // 只有在 auth ready 且 db 存在時才嘗試載入真實數據
-                    if (db) {
-                        window.db = db;
-                        window.auth = auth;
-                        window.userId = userId;
-                        window.appId = appId;
-                        window.loadTripData(false); 
-                    } else {
-                        // 雖然沒有 db，但至少可以獲取匯率
-                        window.fetchExchangeRate();
-                    }
-                });
-
-            } catch (error) {
-                console.error("Firebase Initialization Error:", error);
-                // 發生錯誤時，標記 auth ready (但 db 仍為 null)，App 會繼續使用預設數據
-                isAuthReady = true;
-                window.fetchExchangeRate();
+            // 處理 Canvas 初始化 Token（如果有的話，但我們這裡手動登入）
+            if (initialAuthToken && firebaseAuth) {
+                // 如果有 token 則嘗試用 token 登入
+                // 這裡我們主要使用 Email/Password，所以省略 token 登入邏輯
             }
-        };
 
-        // 在 window.onload 之後手動調用 initFirebase
-        window.initFirebase();
-    </script>
 
-    <script>
-        // --- 樣式設定與 Tailwind 配置 ---
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        'fuji-blue': '#6a82b3', // 主色：富士藍
-                        'snow-white': '#ffffff', // 雪白
-                        'warm-gray': '#f5f5f5', // 暖灰 (背景色)
-                        'accent-red': '#D9534F',
-                        'accent-green': '#5CB85C',
-                        'accent-yellow': '#F0AD4E',
-                    },
-                    fontFamily: {
-                        sans: ['"Zen Maru Gothic"', 'sans-serif'],
-                    },
-                }
-            }
+            return () => unsubscribe();
+        } catch (e) {
+            console.error("Firebase Initialization Error:", e);
+            setDataError('Firebase 初始化失敗，請檢查配置。');
+        }
+    }, []);
+
+    // 2. 認證操作 (登入/註冊/登出)
+    const handleAuth = async () => {
+        setAuthError('');
+        if (!auth || !email || !password) {
+            setAuthError('請輸入電子郵件和密碼。');
+            return;
         }
 
-        // --- 預設行程數據 ---
-        // 保持與上一次一致
-        const initialItinerary = [
-            { date: "12/25", dayName: "Day 1", mainArea: "安國, 弘大, 延南洞, 明洞", weather: "8°C, 晴 (API載入中)",
-                dressCode: "建議: 極厚外套、圍巾、手套 (Heavy coat, scarf, gloves). 雪況: 無積雪 (No snow).",
-                events: [
-                    { time: "08:00", category: "食物", name: "Dotori Garden (도토리가든)", address: "서울 종로구 북촌로 4길 20", notes: "必吃：招牌牛角包", tags: ["必吃"], naverId: "12345" },
-                    { time: "10:30", category: "購物", name: "ZERO SPACE（제로스페이스）", address: "서울 종로구 북촌로5가길 16", notes: "安國逛街順路", tags: ["必買"], naverId: "12346" },
-                    { time: "12:30", category: "交通", name: "安國 → 弘大", address: "地鐵", notes: "地鐵18分鐘", tags: [], naverId: "" },
-                    { time: "13:00", category: "食物", name: "Gop Mapo 烤肥腸 (곱마포)", address: "서울 마포구 독막로7길 51", notes: "午餐", tags: ["必吃"], naverId: "12347" },
-                    { time: "15:00", category: "食物", name: "Artist Bakery 弘大 (아티스트 베이커리)", address: "서울 마포구 동교로 251-3", notes: "下午茶，必拍可頌", tags: ["必拍"], naverId: "12348" },
-                    { time: "17:00", category: "景點", name: "延南洞", address: "弘大旁", notes: "散步、小店、甜餅", tags: [], naverId: "" },
-                    { time: "19:30", category: "食物", name: "🦀烏達里家（醬蟹）(오다리집 간장게장)", address: "서울 중구 명동8나길 28 2–3층", notes: "晚餐，醬蟹定食", tags: ["必吃"], naverId: "12349" },
-                    { time: "21:00", category: "景點", name: "明洞聖誕燈飾（明洞聖堂）", address: "서울 중구 명동길 74", notes: "必拍燈飾！", photoTip: "使用人像模式拍攝，背景虛化更夢幻。", tags: ["必拍"], naverId: "12350" },
-                ]
-            },
-            { date: "12/26", dayName: "Day 2", mainArea: "明洞, 南大門, 東大門, 新堂", weather: "5°C, 陰 (API載入中)",
-                dressCode: "建議: 保暖內衣、毛衣 (Thermal, sweater). 雪況: 低溫乾燥 (Cold & Dry).",
-                events: [
-                    { time: "09:00", category: "食物", name: "宋家飯捲（明洞）(송가김밥)", address: "서울 중구 퇴계로 120", notes: "早餐", tags: ["必吃"], naverId: "22345" },
-                    { time: "11:00", category: "購物", name: "明洞購物區 (명동거리)", address: "서울 중구 명동길 일대", notes: "掃貨時間", tags: ["必買"], naverId: "22346" },
-                    { time: "13:00", category: "食物", name: "韓牛一條街（退溪路）(퇴계로 한우골목)", address: "서울 중구 퇴계로 180길 일대", notes: "午餐", tags: ["必吃"], naverId: "22347" },
-                    { time: "15:00", category: "購物", name: "南大門市場 (남대문시장)", address: "서울 중구 남대문시장4길 21", notes: "零食、手信", tags: ["必買"], naverId: "22348" },
-                    { time: "17:00", category: "購物", name: "Doota Mall (두타몰)", address: "서울 중구 장충단로 275", notes: "No Brand 掃貨", tags: ["必買"], naverId: "22349" },
-                    { time: "18:00", category: "甜品", name: "Scooper Gelato", address: "두타몰 地下層", notes: "開心果 AFFOGATO", tags: ["必吃"], naverId: "22350" },
-                    { time: "20:00", category: "食物", name: "友誼辣雞爪 (우정닭발)", address: "서울 중구 퇴계로 421", notes: "晚餐，新堂 닭발 골목", tags: ["必吃"], naverId: "22351" },
-                ]
-            },
-            { date: "12/27", dayName: "Day 3", mainArea: "安國 Café, 益善洞, 乙支路", weather: "10°C, 多雲 (API載入中)",
-                dressCode: "建議: 多層次穿搭，室內會很暖 (Layers). 雪況: 無 (None).",
-                events: [
-                    { time: "09:30", category: "食物", name: "Cafe Layered (安國) (카페 레이어드)", address: "서울 종로구 북촌로 6", notes: "早餐，打卡咖啡廳", tags: ["必拍"], naverId: "32345" },
-                    { time: "13:00", category: "食物", name: "Nakwonjang（益善洞）(낙원장)", address: "서울 종로구 수표로28길 33", notes: "午餐", tags: ["必吃"], naverId: "32346" },
-                    { time: "15:00", category: "景點", name: "益善洞韓屋街", address: "서울 종로구 수표로28길 일대", notes: "行小店／打卡", tags: ["必拍"], naverId: "32347" },
-                    { time: "19:00", category: "食物", name: "水芹菜烤豬肉 (돌판 수미나물 삼겹살)", address: "서울 중구 수표로 48-1", notes: "晚餐，乙支路", tags: ["必吃"], naverId: "32348" },
-                    { time: "21:00", category: "活動", name: "飯後自由活動", address: "", notes: "回酒店 / 便利店 / 明洞散步 皆可", tags: [], naverId: "" },
-                ]
-            },
-            { date: "12/28", dayName: "Day 4", mainArea: "聖水 ALL DAY, 明洞", weather: "3°C, 雪 (API載入中)",
-                dressCode: "建議: 防水靴、帽子 (Waterproof boots, hat). 雪況: 有機會下雪！(Chance of snow!).",
-                events: [
-                    { time: "08:30", category: "食物", name: "Onion 聖水 (어니언 성수)", address: "서울 성동구 아차산로17길 33", notes: "早餐，打卡咖啡廳", tags: ["必拍"], naverId: "42345" },
-                    { time: "10:30", category: "購物", name: "聖水潮流散步", address: "聖水洞一帶", notes: "Musinsa, ADER ERROR, Tamburins", tags: ["必買"], naverId: "42346" },
-                    { time: "13:00", category: "食物", name: "無垢屋 (무쿠우동)", address: "서울 성동구 서울숲2길 28-13", notes: "午餐，烏冬", tags: ["必吃"], naverId: "42347" },
-                    { time: "15:00", category: "甜品", name: "Milky Shop (밀키샵)", address: "서울 성동구 서울숲2길 19-13", notes: "甜品時間", tags: ["必吃", "必拍"], naverId: "42348" },
-                    { time: "17:00", category: "交通", name: "聖水 → 明洞", address: "地鐵", notes: "20–25分鐘", tags: [], naverId: "" },
-                    { time: "19:00", category: "食物", name: "晚餐 (二選一)", address: "", notes: "IDAEJO 排骨湯 或 明洞炸雞", tags: ["必吃"], naverId: "" },
-                ]
-            },
-            { date: "12/29", dayName: "Day 5", mainArea: "最後補貨, 鰻魚, 機場", weather: "6°C, 晴 (API載入中)",
-                dressCode: "建議: 輕便裝束，方便移動 (Comfortable for travel). 雪況: 無 (None).",
-                events: [
-                    { time: "09:00", category: "食物", name: "Egg Drop (明洞) (에그드랍)", address: "서울 중구 명동길 24", notes: "早餐", tags: ["必吃"], naverId: "52345" },
-                    { time: "10:30", category: "購物", name: "明洞最後掃貨", address: "서울 중구 명동길 일대", notes: "手信、零食補貨", tags: ["必買"], naverId: "52346" },
-                    { time: "13:00", category: "食物", name: "最後午餐：豐川鰻魚 (풍천장어)", address: "서울 중구 명동4길 10", notes: "滋補一下", tags: ["必吃"], naverId: "52347" },
-                    { time: "15:00", category: "交通", name: "回酒店拎行李 → 機場", address: "", notes: "預留充足時間", tags: ["必買"], naverId: "" },
-                ]
+        try {
+            if (authMode === 'register') {
+                await createUserWithEmailAndPassword(auth, email, password);
+                alertMessage('註冊成功！您已自動登入。', 'success');
+            } else {
+                await signInWithEmailAndPassword(auth, email, password);
+                alertMessage('登入成功！', 'success');
             }
+        } catch (error) {
+            console.error("Auth Error:", error);
+            const friendlyMessage = error.message.includes('email-already-in-use') ? '此電子郵件已被註冊。' :
+                                    error.message.includes('wrong-password') || error.message.includes('user-not-found') ? '電子郵件或密碼錯誤。' :
+                                    '認證失敗: ' + error.message;
+            setAuthError(friendlyMessage);
+        }
+    };
+
+    const handleSignOut = async () => {
+        if (auth) {
+            await signOut(auth);
+            setAuthError('');
+            setEmail('');
+            setPassword('');
+            setAuthMode('login');
+            alertMessage('您已登出。', 'info');
+        }
+    };
+
+    // 3. Firestore 資料監聽
+    useEffect(() => {
+        if (!isAuthReady || !db || !userId) {
+            setPlan(null);
+            setLoading(false);
+            return;
+        }
+
+        setDataError('');
+        setLoading(true);
+
+        const { collectionPath, docId } = TRIP_DOC_PATH(userId);
+        const docRef = doc(db, collectionPath, docId);
+
+        console.log('Attaching Firestore listener to:', collectionPath, docId);
+
+        const unsubscribe = onSnapshot(docRef, 
+            (docSnapshot) => {
+                if (docSnapshot.exists()) {
+                    const data = docSnapshot.data();
+                    setPlan(data);
+                    console.log("Current data:", data);
+                } else {
+                    // 如果文件不存在，設置一個空基礎結構
+                    setPlan({ days: [] });
+                    console.log("No such document! Initializing empty plan.");
+                }
+                setLoading(false);
+            }, 
+            (error) => {
+                console.error("Firestore Snapshot Error:", error);
+                setDataError('無法載入行程數據。請檢查網路連線或權限。');
+                setLoading(false);
+            }
+        );
+
+        return () => unsubscribe();
+    }, [isAuthReady, db, userId]);
+
+    // 4. 資料操作邏輯
+    
+    // 儲存整個文件 (用於初始化或重大更新)
+    const savePlan = useCallback(async (newPlan) => {
+        if (!db || !userId) return;
+        setDataError('');
+        try {
+            const { collectionPath, docId } = TRIP_DOC_PATH(userId);
+            const docRef = doc(db, collectionPath, docId);
+            await setDoc(docRef, newPlan, { merge: true });
+            console.log("Plan updated successfully.");
+        } catch (error) {
+            console.error("Error saving plan:", error);
+            setDataError('儲存行程失敗。');
+        }
+    }, [db, userId]);
+
+    // 添加新的行程項目
+    const handleAddItem = async (dayIndex) => {
+        if (!plan || !db || !userId || !newItemText.trim()) return;
+
+        const updatedPlan = { ...plan };
+        
+        // 確保 days 陣列存在
+        if (!updatedPlan.days || updatedPlan.days.length <= dayIndex) {
+            // 如果 days 陣列不存在或長度不足，先初始化它。
+            // 這裡我們假設只有一天，如果需要多天，需要更複雜的 UI 邏輯。
+            updatedPlan.days = [{ id: 1, date: '12月24日', activities: [] }];
+            dayIndex = 0;
+        }
+
+        const newActivity = {
+            id: Date.now(), // 簡單的唯一 ID
+            text: newItemText.trim(),
+            timestamp: serverTimestamp() // 使用 Firebase 時間戳記
+        };
+
+        updatedPlan.days[dayIndex].activities = [
+            ...(updatedPlan.days[dayIndex].activities || []), 
+            newActivity
         ];
 
-        // 預設的旅行數據結構 (已更新 daily 預算結構以包含 expenses 數組)
-        const defaultTripData = {
-            tripName: "首爾聖誕旅行",
-            dates: "2025/12/25 - 2025/12/29", // YYYY/MM/DD - YYYY/MM/DD
-            flights: {
-                outbound: { flight: "UO626", from: "香港 (HKG)", to: "首爾 (ICN)", status: "準時", departure: "12/25 10:00", arrival: "12:30" },
-                inbound: { flight: "UO631", from: "首爾 (ICN)", to: "香港 (HKG)", status: "準時", departure: "12/29 18:00", arrival: "21:00" },
-            },
-            budget: {
-                baseCurrency: "HKD",
-                targetCurrency: "KRW",
-                totalBudget: 5000,
-                daily: initialItinerary.map(day => ({
-                    date: day.date, // MM/DD
-                    budget: 1000,
-                    // spent 欄位將會在 renderBudget 中根據 expenses 數組計算得出
-                    expenses: [] // 新增詳細消費紀錄
-                }))
-            },
-            itinerary: initialItinerary,
-        };
+        setNewItemText('');
+        await savePlan(updatedPlan);
+    };
 
-        // --- 全域應用程式狀態 ---
-        let state = {
-            currentTab: 'itinerary', // 預設為行程頁面
-            currentDayIndex: 0,
-            tripData: defaultTripData, 
-            exchangeRate: { rate: 0.0, source: 'Loading...' },
-            exchangeAttempts: 0 // 【更新：即時匯率】追蹤嘗試次數
-        };
+    // 刪除行程項目
+    const handleDeleteItem = async (dayIndex, activityId) => {
+        if (!plan || !db || !userId) return;
 
-        // 景點分類對應的圖標 (也用於消費類別)
-        const categoryIcons = {
-            '食物': 'utensils',
-            '活動': 'party-popper',
-            '購物': 'shopping-bag',
-            '景點': 'map-pin',
-            '酒店': 'bed',
-            '交通': 'car',
-            '甜品': 'ice-cream',
-            '其他': 'more-horizontal'
-        };
-
-        // --- Firebase Firestore 數據處理 (保持不變) ---
-        // 【多用戶儲存】這個路徑包含了 userId (uid)，確保每個用戶都有獨立的資料
-        const TRIP_DOC_PATH = (uid) => `artifacts/${window.appId || 'default'}/users/${uid}/seoul_trip_planner/trip_data`;
-
-        window.loadTripData = async (forceDefault = false) => {
-             // 如果沒有成功連接到 Firebase (db 為 null)，則不執行後續的 Firestore 讀取操作。
-            if (!window.db) {
-                console.log("Firestore not available. Using existing state data.");
-                window.fetchExchangeRate(); // 仍然嘗試獲取匯率
-                return;
-            }
-
-            console.log("Attempting to load data for user:", window.userId);
-
-            const docRef = doc(window.db, TRIP_DOC_PATH(window.userId));
-
-            // 使用 onSnapshot 實現實時更新
-            onSnapshot(docRef, (docSnap) => {
-                let data = defaultTripData;
-                if (docSnap.exists()) {
-                    console.log("Document data found:", docSnap.data());
-                    data = docSnap.data();
-                    // 確保數據結構兼容 (如果舊數據沒有 expenses，則初始化)
-                    if (data.budget && data.budget.daily) {
-                        data.budget.daily = data.budget.daily.map(day => ({
-                            ...day,
-                            expenses: day.expenses || [] // 確保 expenses 存在
-                        }));
-                    }
-                } else {
-                    console.log("No document found, setting initial data.");
-                    setDoc(docRef, defaultTripData).catch(e => console.error("Error setting initial document:", e));
-                }
-
-                state.tripData = data;
-                // 確保切換到新增的 Day (如果數據量改變且當前 Day 超出範圍)
-                if (state.currentDayIndex >= data.itinerary.length) {
-                    state.currentDayIndex = data.itinerary.length - 1;
-                }
-                renderApp(); // 從 Firestore 獲取數據後重新渲染
-                window.fetchExchangeRate(); // 載入資料後獲取匯率
-            }, (error) => {
-                console.error("Firestore Snapshot Error:", error);
-                // 數據庫連線或權限錯誤時，維持現有 state (即預設數據)
-                renderApp(); 
-                window.fetchExchangeRate();
-            });
-        };
-
-
-        window.saveTripData = async (newData) => {
-            if (!window.db || !window.userId) {
-                console.error("Cannot save: Firestore or User ID not available. Data saved locally only.");
-                state.tripData = newData; // 僅更新本地狀態
-                renderApp();
-                return;
-            }
-            try {
-                const docRef = doc(window.db, TRIP_DOC_PATH(window.userId));
-                await setDoc(docRef, newData, { merge: true }); // 使用 merge 以免覆蓋整個文檔
-                console.log("Trip data saved successfully. User:", window.userId);
-                // onSnapshot 會自動更新 state.tripData 和 UI
-            } catch (error) {
-                console.error("Error saving trip data:", error);
-            }
-        };
-
-        // --- 行程日期處理函數 (保持不變) ---
-
-        /**
-         * 將 MM/DD 格式的日期和 YYYY 年份組合為 DD/MM/YYYY 格式用於顯示。
-         * @param {string} dateMMDD - MM/DD 格式的日期 (e.g., "12/25")
-         * @param {string} tripYear - YYYY 格式的年份 (e.g., "2025")
-         * @returns {string} DD/MM/YYYY 格式的日期 (e.g., "25/12/2025")
-         */
-        function formatDateToDisplay(dateMMDD, tripYear) {
-            const [month, dayNum] = dateMMDD.split('/');
-            return `${dayNum}/${month}/${tripYear}`;
-        };
-
-        /**
-         * 計算下一天的日期。
-         * @param {string} lastDateMMDD - 上一個日子的 MM/DD 格式日期 (e.g., "12/31")
-         * @param {string} tripYear - YYYY 格式的年份 (e.g., "2025")
-         * @returns {string} 下一個日子的 MM/DD 格式日期 (e.g., "01/01")
-         */
-        function calculateNextDate(lastDateMMDD, tripYear) {
-            const [month, day] = lastDateMMDD.split('/').map(Number);
-            // 注意：月份在 Date 物件中是 0-indexed (12月是 11)
-            const lastDate = new Date(Number(tripYear), month - 1, day); 
-            lastDate.setDate(lastDate.getDate() + 1); // 加一天
-
-            // 獲取新日期，並確保 MM/DD 格式
-            const newMonth = (lastDate.getMonth() + 1).toString().padStart(2, '0');
-            const newDay = lastDate.getDate().toString().padStart(2, '0');
-            
-            return `${newMonth}/${newDay}`; // MM/DD
-        }
-
-        /**
-         * 新增一天行程。
-         */
-        window.addDay = () => {
-            const tripData = JSON.parse(JSON.stringify(state.tripData)); // 深複製數據
-            const lastDayIndex = tripData.itinerary.length - 1;
-            const lastDay = tripData.itinerary[lastDayIndex];
-            
-            // 提取年份 (假設 tripData.dates 格式為 "YYYY/MM/DD - YYYY/MM/DD")
-            const tripYear = tripData.dates.substring(0, 4);
-
-            // 1. 計算新的日期 (MM/DD)
-            const newDateMMDD = calculateNextDate(lastDay.date, tripYear);
-            
-            // 2. 確定新的 Day 名稱和索引
-            const newDayIndex = lastDayIndex + 1;
-            const newDayName = `Day ${newDayIndex + 1}`;
-            
-            // 3. 建立新的行程日和預算項目
-            const newItineraryDay = {
-                date: newDateMMDD, 
-                dayName: newDayName, 
-                mainArea: "新增行程 - 請編輯", 
-                weather: "載入中...",
-                dressCode: "建議: 請自行填寫 (Enter your suggestions). 雪況: N/A.",
-                events: [
-                    { time: "10:00", category: "景點", name: "探索新區域", address: "", notes: "第一項行程", tags: [], naverId: "" }
-                ]
-            };
-            
-            const newBudgetEntry = {
-                date: newDateMMDD, // MM/DD
-                budget: 1000,
-                expenses: [] // 【更新：新增日功能】確保新增時有 expenses 數組
-            };
-
-            // 4. 更新數據
-            tripData.itinerary.push(newItineraryDay);
-            tripData.budget.daily.push(newBudgetEntry);
-
-            // 5. 更新總旅行日期範圍 (更新結束日期)
-            // tripData.dates 格式: "YYYY/MM/DD - YYYY/MM/DD"
-            const datesParts = tripData.dates.split(' - ');
-            if (datesParts.length === 2) {
-                const newEndYYYYMMDD = `${tripYear}/${newDateMMDD}`; // YYYY/MM/DD
-                datesParts[1] = newEndYYYYMMDD;
-                tripData.dates = datesParts.join(' - ');
-            }
-
-            // 6. 儲存並切換到新增的 Day
-            window.saveTripData(tripData);
-            state.currentDayIndex = newDayIndex; // 切換到新的 Day
-            renderApp();
-        }
-
-        // --- 【更新：即時匯率】使用公開 API 獲取即時匯率 ---
-        async function fetchExchangeRate() {
-            if (!state.tripData) return;
-
-            if (state.exchangeAttempts >= 3) {
-                // 連續失敗後，使用一個預設的靜態匯率作為後備
-                const fallbackRate = 175.00; // 例如：1 HKD = 175 KRW
-                state.exchangeRate = { rate: fallbackRate, source: `靜態後備 (${fallbackRate})` };
-                if (state.currentTab === 'guide' || state.currentTab === 'budget') renderApp();
-                return;
-            }
-            state.exchangeAttempts++;
-            state.exchangeRate = { rate: 0.0, source: 'Loading...' };
-            if (state.currentTab === 'guide' || state.currentTab === 'budget') renderApp();
-
-            const base = state.tripData.budget.baseCurrency || 'HKD';
-            const target = state.tripData.budget.targetCurrency || 'KRW';
-            
-            // 使用 exchange-rate-api.com 的免費端點
-            const apiUrl = `https://v6.exchangerate-api.com/v6/latest/${base}`; 
-
-            try {
-                const response = await fetch(apiUrl, { method: 'GET' });
-
-                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-
-                const result = await response.json();
-                
-                if (result.conversion_rates && result.conversion_rates[target]) {
-                    const rate = result.conversion_rates[target];
-                    if (!isNaN(rate) && rate > 0) {
-                        state.exchangeRate = { rate: rate, source: 'Exchange-Rate-API' };
-                        state.exchangeAttempts = 0; // 成功後重置
-                    } else {
-                        throw new Error("Invalid rate received or rate is zero.");
-                    }
-                } else {
-                    throw new Error("Target currency not found in API response.");
-                }
-
-            } catch (error) {
-                console.error("Error fetching exchange rate:", error);
-                // 失敗時使用指數退避和重試
-                await new Promise(resolve => setTimeout(resolve, 1000 * state.exchangeAttempts));
-                fetchExchangeRate(); // Retry
-            }
-            // 在 Guide 或 Budget 頁面更新時才重新渲染
-            if (state.currentTab === 'guide' || state.currentTab === 'budget') renderApp();
-        }
-
-        // --- 應用程式渲染與互動函數 (保持不變) ---
-
-        function switchTab(tab) {
-            state.currentTab = tab;
-            renderApp();
-            if (tab === 'guide' || tab === 'budget') {
-                fetchExchangeRate(); 
-            }
-        }
+        const updatedPlan = { ...plan };
         
-        function selectDay(index) {
-            state.currentDayIndex = index;
-            renderApp();
-        }
-
-        function getCategoryStyle(category) {
-            switch (category) {
-                case '食物': return 'bg-yellow-100 text-yellow-700';
-                case '活動': return 'bg-pink-100 text-pink-700';
-                case '購物': return 'bg-fuji-blue/20 text-fuji-blue';
-                case '景點': return 'bg-green-100 text-green-700';
-                case '酒店': return 'bg-red-100 text-red-700';
-                case '交通': return 'bg-gray-200 text-gray-600';
-                case '甜品': return 'bg-purple-100 text-purple-700';
-                case '其他': return 'bg-gray-400/20 text-gray-700';
-                default: return 'bg-gray-100 text-gray-500';
-            }
-        }
+        // 過濾掉要刪除的活動
+        updatedPlan.days[dayIndex].activities = updatedPlan.days[dayIndex].activities
+            .filter(activity => activity.id !== activityId);
         
-        // --- 預算編輯 Modal (保持不變) ---
-        function openEditBudgetModal() {
-            if (!state.tripData) return;
-            const currentDay = state.tripData.budget.daily[state.currentDayIndex];
-            const modal = document.getElementById('edit-budget-modal');
-            const dailyBudgetInput = document.getElementById('edit-daily-budget');
-            const totalBudgetInput = document.getElementById('edit-total-budget');
+        await savePlan(updatedPlan);
+    };
 
-            if (currentDay && state.tripData) {
-                dailyBudgetInput.value = currentDay.budget;
-                totalBudgetInput.value = state.tripData.budget.totalBudget;
-                modal.classList.remove('hidden');
-            }
-        }
+    // 5. UI 組件/渲染邏輯
+    
+    // 警告/訊息顯示 (取代 alert)
+    const alertMessage = (message, type = 'error') => {
+        // 這裡使用一個簡單的狀態變數來顯示訊息，但為了 React 單一檔案限制，我們直接使用 setAuthError
+        setAuthError(message);
+        setTimeout(() => setAuthError(''), 5000); // 5秒後清除
+    };
 
-        function closeEditBudgetModal() {
-            document.getElementById('edit-budget-modal').classList.add('hidden');
-        }
-
-        function saveBudget() {
-            const dailyBudgetInput = document.getElementById('edit-daily-budget').value;
-            const totalBudgetInput = document.getElementById('edit-total-budget').value;
-            const newDailyBudget = parseFloat(dailyBudgetInput);
-            const newTotalBudget = parseFloat(totalBudgetInput);
-
-            if (isNaN(newDailyBudget) || isNaN(newTotalBudget) || newDailyBudget <= 0 || newTotalBudget <= 0) {
-                const messageBox = document.getElementById('message-box');
-                messageBox.innerHTML = `<div class="bg-accent-red text-snow-white p-3 rounded-lg shadow-md">請輸入有效的預算金額。</div>`;
-                setTimeout(() => messageBox.innerHTML = '', 3000);
-                return;
-            }
-
-            const newTripData = JSON.parse(JSON.stringify(state.tripData));
-            newTripData.budget.totalBudget = newTotalBudget;
-            newTripData.budget.daily[state.currentDayIndex].budget = newDailyBudget;
+    const LoadingSpinner = () => (
+        <div className="flex justify-center items-center p-4">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500"></div>
+            <span className="ml-3 text-indigo-600">載入中...</span>
+        </div>
+    );
+    
+    const AuthForm = () => (
+        <div className="w-full max-w-md mx-auto p-6 bg-white rounded-xl shadow-2xl space-y-4">
+            <h2 className="text-3xl font-bold text-center text-indigo-700">
+                {authMode === 'login' ? '會員登入' : '註冊帳號'}
+            </h2>
+            {authError && (
+                <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-3 rounded-md text-sm">
+                    {authError}
+                </div>
+            )}
+            <input
+                type="email"
+                placeholder="電子郵件 (e.g., user@example.com)"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150"
+            />
+            <input
+                type="password"
+                placeholder="密碼"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150"
+            />
+            <button
+                onClick={handleAuth}
+                className="w-full flex justify-center items-center py-3 px-4 border border-transparent rounded-lg shadow-lg text-lg font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-4 focus:ring-indigo-500 focus:ring-opacity-50 transition duration-300 transform hover:scale-[1.01]"
+            >
+                {authMode === 'login' ? <><LucideLogIn className="w-5 h-5 mr-2" /> 登入</> : <><LucideUserPlus className="w-5 h-5 mr-2" /> 註冊</>}
+            </button>
             
-            window.saveTripData(newTripData);
-            closeEditBudgetModal();
-        }
-        
-        // --- 新增消費 Modal (保持不變) ---
-        function openAddExpenseModal(dayIndex) {
-            const modal = document.getElementById('add-expense-modal');
-            const baseCurrency = state.tripData.budget.baseCurrency; // HKD
-            const targetCurrency = state.tripData.budget.targetCurrency; // KRW
-            const rate = state.exchangeRate.rate;
-            
-            // 清空並設定預設值
-            document.getElementById('expense-amount').value = '';
-            document.getElementById('expense-notes').value = '';
-            document.getElementById('expense-category').value = '食物';
-            document.getElementById('expense-currency').value = targetCurrency; // 預設為當地貨幣 KRW
-            document.getElementById('modal-day-name').textContent = state.tripData.itinerary[dayIndex].dayName;
-            
-            // 更新匯率顯示
-            const rateDisplay = rate > 0 ? `${rate.toFixed(2)} ${targetCurrency}` : '載入中...';
-            document.getElementById('modal-exchange-rate').textContent = `1 ${baseCurrency} ≈ ${rateDisplay}`;
-            
-            // 將 currentDayIndex 暫存到按鈕上
-            document.getElementById('save-expense-btn').setAttribute('data-day-index', dayIndex);
-            
-            modal.classList.remove('hidden');
-        }
-        
-        function closeAddExpenseModal() {
-            document.getElementById('add-expense-modal').classList.add('hidden');
-        }
-        
-        window.saveExpense = () => {
-            const dayIndex = parseInt(document.getElementById('save-expense-btn').getAttribute('data-day-index'));
-            const amountLocal = parseFloat(document.getElementById('expense-amount').value);
-            const currency = document.getElementById('expense-currency').value;
-            const category = document.getElementById('expense-category').value;
-            const notes = document.getElementById('expense-notes').value.trim();
+            <button
+                onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')}
+                className="w-full text-center text-indigo-500 hover:text-indigo-700 text-sm py-2 transition duration-150"
+            >
+                {authMode === 'login' ? '還沒有帳號？點此註冊' : '已經有帳號？點此登入'}
+            </button>
+        </div>
+    );
 
-            if (isNaN(amountLocal) || amountLocal <= 0) {
-                const messageBox = document.getElementById('message-box');
-                messageBox.innerHTML = `<div class="bg-accent-red text-snow-white p-3 rounded-lg shadow-md">請輸入有效的消費金額。</div>`;
-                setTimeout(() => messageBox.innerHTML = '', 3000);
-                return;
-            }
+    const PlannerView = () => {
+        // 假設只有一天的行程 (為了簡化 UI)
+        const dayPlan = plan?.days?.[0] || { date: '12月24日', activities: [] };
 
-            const rate = state.exchangeRate.rate;
-            let amountHKD = 0;
-            const baseCurrency = state.tripData.budget.baseCurrency; // HKD
-            const targetCurrency = state.tripData.budget.targetCurrency; // KRW
+        return (
+            <div className="w-full max-w-4xl mx-auto p-6 bg-white rounded-xl shadow-2xl space-y-8">
+                {/* 頂部用戶資訊與登出 */}
+                <div className="flex justify-between items-center pb-4 border-b border-indigo-100">
+                    <div className="flex flex-col">
+                        <h1 className="text-3xl font-extrabold text-gray-800 flex items-center">
+                            <LucideCalendar className="w-8 h-8 text-indigo-500 mr-2" />
+                            首爾聖誕旅行計畫
+                        </h1>
+                        <p className="text-sm text-gray-500 mt-1">
+                            用戶 ID: <span className="font-mono text-xs bg-indigo-50 text-indigo-800 p-1 rounded-md">{userId}</span>
+                        </p>
+                    </div>
+                    <button
+                        onClick={handleSignOut}
+                        className="flex items-center px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition duration-150 shadow-md transform hover:scale-[1.05]"
+                    >
+                        <LucideLogOut className="w-5 h-5 mr-2" />
+                        登出
+                    </button>
+                </div>
 
-            if (currency === targetCurrency && rate <= 0) {
-                 const messageBox = document.getElementById('message-box');
-                 messageBox.innerHTML = `<div class="bg-accent-red text-snow-white p-3 rounded-lg shadow-md">匯率載入失敗 (${rate.toFixed(2)}), 無法準確轉換 ${targetCurrency}。請稍後重試。</div>`;
-                 setTimeout(() => messageBox.innerHTML = '', 4000);
-                 return; // 匯率無效時，立即退出
-            }
+                {/* 添加行程項目 */}
+                <div className="space-y-4">
+                    <h2 className="text-xl font-bold text-gray-700">新增 {dayPlan.date} 的行程：</h2>
+                    <div className="flex space-x-3">
+                        <input
+                            type="text"
+                            placeholder="輸入活動內容 (例如: 明洞購物, 晚餐烤肉)"
+                            value={newItemText}
+                            onChange={(e) => setNewItemText(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleAddItem(0)}
+                            className="flex-grow px-4 py-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150"
+                        />
+                        <button
+                            onClick={() => handleAddItem(0)}
+                            disabled={!newItemText.trim()}
+                            className="flex items-center px-6 py-3 bg-indigo-600 text-white rounded-lg shadow-lg hover:bg-indigo-700 disabled:bg-indigo-300 transition duration-300 transform hover:scale-105"
+                        >
+                            <LucideSend className="w-5 h-5 mr-2" />
+                            添加
+                        </button>
+                    </div>
+                </div>
 
-            // 換算邏輯 (1 HKD = X KRW)
-            if (currency === targetCurrency) {
-                // KRW -> HKD: 韓圜金額 / (KRW/HKD 匯率) 
-                amountHKD = amountLocal / rate; 
-            } else if (currency === baseCurrency) {
-                // HKD -> HKD: 無需換算
-                amountHKD = amountLocal;
-            } else {
-                // 其他情況 (未預期，暫時視為 HKD)
-                amountHKD = amountLocal;
-            }
-
-            const newExpense = {
-                id: Date.now(), // 唯一ID
-                amountLocal: amountLocal,
-                currency: currency,
-                amountHKD: parseFloat(amountHKD.toFixed(2)), // 限制兩位小數
-                category: category,
-                notes: notes,
-                timestamp: new Date().toISOString()
-            };
-
-            const newTripData = JSON.parse(JSON.stringify(state.tripData));
-            const currentDayBudget = newTripData.budget.daily[dayIndex];
-            
-            // 將新消費加入數組
-            currentDayBudget.expenses.unshift(newExpense); // 新的放最前面
-            
-            window.saveTripData(newTripData);
-            closeAddExpenseModal();
-        }
-        
-        // --- 行程事件編輯 (保持不變) ---
-        function toggleItineraryEditMode(event, dayIndex, eventIndex) {
-            const card = event.currentTarget.closest('.itinerary-card');
-            const displayElements = card.querySelectorAll('.display-mode');
-            const editElements = card.querySelectorAll('.edit-mode');
-            const isEditing = card.classList.contains('editing');
-            
-            if (isEditing) {
-                // Save logic
-                const newName = card.querySelector('input[name="name"]').value;
-                const newNotes = card.querySelector('textarea[name="notes"]').value;
-
-                const newTripData = JSON.parse(JSON.stringify(state.tripData));
-                const eventToUpdate = newTripData.itinerary[dayIndex].events[eventIndex];
-                eventToUpdate.name = newName;
-                eventToUpdate.notes = newNotes;
-                
-                window.saveTripData(newTripData);
-
-                card.classList.remove('editing');
-                displayElements.forEach(el => el.classList.remove('hidden'));
-                editElements.forEach(el => el.classList.add('hidden'));
-
-            } else {
-                // Enter edit mode
-                document.querySelectorAll('.itinerary-card.editing').forEach(c => {
-                    c.classList.remove('editing');
-                    c.querySelectorAll('.display-mode').forEach(el => el.classList.remove('hidden'));
-                    c.querySelectorAll('.edit-mode').forEach(el => el.classList.add('hidden'));
-                });
-
-
-                card.classList.add('editing');
-                displayElements.forEach(el => el.classList.add('hidden'));
-                editElements.forEach(el => el.classList.remove('hidden'));
-            }
-        }
-        
-        function getTagStyle(tag) {
-             switch (tag) {
-                case '必吃': return 'bg-accent-red/20 text-accent-red';
-                case '必買': return 'bg-fuji-blue/20 text-fuji-blue';
-                case '必拍': return 'bg-accent-yellow/20 text-accent-yellow';
-                default: return 'bg-gray-200 text-gray-700';
-            }
-        }
-
-        /**
-         * 根據天氣條件字符串返回 Lucide 圖標名稱。
-         * @param {string} condition - 天氣條件字符串 (e.g., "晴 (API載入中)", "雪")
-         * @returns {string} Lucide 圖標名稱
-         */
-        function getWeatherIcon(condition) {
-            if (condition.includes('晴')) return 'sun';
-            if (condition.includes('陰')) return 'cloud';
-            if (condition.includes('雪')) return 'cloud-snow';
-            if (condition.includes('雨')) return 'cloud-rain';
-            if (condition.includes('多雲')) return 'cloudy';
-            return 'sun';
-        }
-
-
-        // --- 渲染各分頁內容 (保持不變) ---
-
-        function renderItinerary() {
-            if (!state.tripData) return `<div class="p-8 text-center text-accent-red">行程資料載入錯誤。</div>`;
-
-            const itinerary = state.tripData.itinerary;
-            const currentDay = itinerary[state.currentDayIndex];
-            const dailyBudget = state.tripData.budget.daily[state.currentDayIndex];
-            
-            // 獲取年份
-            const tripYear = state.tripData.dates.substring(0, 4);
-
-            // 格式化 MM/DD 為 DD/MM/YYYY
-            const fullDate = (dateMMDD) => formatDateToDisplay(dateMMDD, tripYear);
-            
-            // 計算當日總花費 (從 expenses 數組中計算)
-            const daySpent = dailyBudget.expenses.reduce((sum, exp) => sum + exp.amountHKD, 0);
-
-
-            // 1. 每日選擇器 (已移至固定頂部欄，只渲染按鈕)
-            const daySelectorButtons = itinerary.map((day, index) => `
-                <button onclick="selectDay(${index})"
-                    class="flex-shrink-0 px-4 py-2 mx-1 rounded-full text-sm font-bold transition-all duration-200 whitespace-nowrap
-                    ${index === state.currentDayIndex ? 'bg-fuji-blue text-snow-white shadow-md' : 'bg-snow-white text-gray-700 hover:bg-fuji-blue/10'}">
-                    ${day.dayName} (${fullDate(day.date).substring(0, 5)})
-                </button>
-            `).join('');
-            
-            // 2. 每日概覽卡片
-            const dailySummaryCard = `
-                <div class="m-4 p-4 bg-snow-white shadow-lg rounded-xl card-japanese border-t-4 border-fuji-blue/50">
-                    <h2 class="text-xl font-bold text-fuji-blue mb-2">${currentDay.dayName}：${currentDay.mainArea}</h2>
-                    <p class="text-sm text-gray-500 mb-4">${fullDate(currentDay.date)}</p>
+                {/* 行程列表 */}
+                <div className="space-y-4">
+                    <h2 className="text-2xl font-bold text-indigo-600 border-b-2 border-indigo-200 pb-2">{dayPlan.date} 行程清單</h2>
                     
-                    <div class="flex items-center space-x-2 text-md text-gray-700 mb-3">
-                        <i data-lucide="${getWeatherIcon(currentDay.weather)}" class="w-5 h-5 text-accent-yellow"></i>
-                        <span>即時天氣：${currentDay.weather}</span>
-                    </div>
-
-                    <div class="flex justify-between items-center text-sm font-semibold p-3 bg-warm-gray rounded-lg">
-                        <span class="text-fuji-blue">預算餘額 (${state.tripData.budget.baseCurrency})：</span>
-                        <span class="${daySpent > dailyBudget.budget ? 'text-accent-red' : 'text-accent-green'}">
-                             $${(dailyBudget.budget - daySpent).toFixed(0)} / $${dailyBudget.budget.toFixed(0)}
-                        </span>
-                        <button onclick="openEditBudgetModal()" class="text-fuji-blue hover:text-accent-red transition-colors ml-2" aria-label="編輯預算">
-                            <i data-lucide="edit" class="w-4 h-4"></i>
-                        </button>
-                    </div>
-                </div>
-            `;
-
-            // 3. 行程事件卡片列表 (保持不變)
-            const eventsList = currentDay.events.map((event, eventIndex) => {
-                const categoryStyle = getCategoryStyle(event.category);
-                const iconName = categoryIcons[event.category] || 'map-pin';
-                const hasAddress = event.address && event.address.includes('서울');
-                const naverMapUrl = hasAddress ? getNaverMapUrl(event.address) : '#';
-                
-                let carInfo = '';
-                if (event.category === '購物' || event.category === '景點') {
-                    carInfo = `
-                        <div class="text-xs text-gray-400 mt-2 flex items-center space-x-2">
-                            <i data-lucide="parking-square" class="w-3 h-3"></i><span>建議停車場：明洞樂天百貨 (Mock)</span>
-                        </div>
-                    `;
-                } else if (event.category === '交通') {
-                    carInfo = `
-                        <div class="text-xs text-gray-400 mt-2 flex items-center space-x-2">
-                            <i data-lucide="gas-station" class="w-3 h-3"></i><span>建議加油站：弘大 Shell (Mock)</span>
-                        </div>
-                    `;
-                }
-                
-                // 提取 DD/MM
-                const [eventMonth, eventDay] = currentDay.date.split('/');
-
-                return `
-                    <div class="itinerary-card m-4 p-4 bg-snow-white shadow-xl rounded-2xl card-japanese transition-all duration-300 transform hover:scale-[1.01] border-l-4 border-fuji-blue/50">
-                        <div class="flex justify-between items-start mb-3">
-                            <div class="flex items-center">
-                                <div class="flex flex-col items-start mr-3">
-                                    <span class="text-2xl font-black text-fuji-blue">${event.time}</span>
-                                    <span class="text-xs text-gray-500 mt-[-2px]">${eventDay}/${eventMonth}</span>
-                                </div>
-                                <span class="px-3 py-1 text-xs font-bold rounded-full ${categoryStyle}">
-                                    <i data-lucide="${iconName}" class="w-3 h-3 inline mr-1"></i>
-                                    ${event.category}
-                                </span>
-                            </div>
-                            <button onclick="toggleItineraryEditMode(event, ${state.currentDayIndex}, ${eventIndex})" 
-                                class="text-fuji-blue hover:text-accent-red transition-colors edit-toggle-btn" 
-                                aria-label="編輯行程">
-                                <i data-lucide="edit-3" class="w-5 h-5 display-mode"></i>
-                                <span class="edit-mode hidden px-3 py-1 bg-accent-red text-white text-xs rounded-full shadow-md">保存</span>
-                            </button>
-                        </div>
-                        
-                        <h3 class="text-lg font-bold text-gray-800 display-mode">${event.name}</h3>
-                        <input type="text" name="name" value="${event.name}" class="edit-mode hidden w-full p-2 border border-fuji-blue/50 rounded-md text-lg font-bold mb-2">
-
-                        <p class="text-sm text-gray-500 mb-3 display-mode">${event.address}</p>
-                        
-                        <p class="text-base mb-3 display-mode">${event.notes}</p>
-                        <textarea name="notes" class="edit-mode hidden w-full p-2 border border-fuji-blue/50 rounded-md text-sm mb-3" rows="2">${event.notes}</textarea>
-
-                        <div class="flex flex-wrap space-x-2 mb-3">
-                            ${event.tags.map(tag => `
-                                <span class="px-3 py-1 text-xs font-semibold rounded-full shadow ${getTagStyle(tag)}">${tag}</span>
-                            `).join('')}
-                        </div>
-                        
-                        ${event.photoTip ? `
-                            <div class="mt-3 p-3 bg-fuji-blue/10 border-l-4 border-fuji-blue rounded-r-lg">
-                                <p class="text-xs font-bold text-fuji-blue mb-1">📸 拍照小技巧</p>
-                                <p class="text-sm text-gray-700">${event.photoTip}</p>
-                            </div>
-                        ` : ''}
-
-                        ${carInfo}
-
-                        <div class="mt-4 pt-3 border-t border-warm-gray flex justify-between space-x-2">
-                            <a href="${naverMapUrl}" target="_blank" class="${hasAddress ? 'bg-fuji-blue hover:bg-fuji-blue/80' : 'bg-gray-300 cursor-not-allowed'} text-snow-white text-sm py-2 px-4 rounded-full font-bold transition-colors flex items-center w-1/2 justify-center">
-                                <i data-lucide="map" class="w-4 h-4 mr-2"></i> Naver Map
-                            </a>
-                             <button class="bg-accent-red/80 hover:bg-accent-red text-snow-white text-sm py-2 px-4 rounded-full font-bold transition-colors flex items-center w-1/2 justify-center">
-                                <i data-lucide="camera" class="w-4 h-4 mr-2"></i> 上傳照片 (旅記)
-                            </button>
-                        </div>
-                    </div>
-                `;
-            }).join('');
-
-            // 4. 建議穿著和雪況 (保持不變)
-            const dressCodeCard = `
-                 <div class="m-4 p-4 bg-fuji-blue/10 shadow-lg rounded-xl card-japanese border-l-4 border-accent-red">
-                    <h4 class="text-md font-bold text-accent-red mb-2"><i data-lucide="shirt" class="w-4 h-4 inline mr-1"></i> 建議穿著與雪況</h4>
-                    <p class="text-sm text-gray-700">${currentDay.dressCode}</p>
-                </div>
-            `;
-            
-             // 5. 新增行程按鈕 (保持不變)
-            const addEventButton = `
-                 <div class="m-4 pt-2 pb-20 text-center">
-                    <button class="bg-accent-green hover:bg-accent-green/90 text-snow-white text-md py-3 px-6 rounded-full font-bold shadow-lg transition-transform transform hover:scale-105" onclick="alert('新增行程功能待實現！')">
-                        <i data-lucide="plus-circle" class="w-5 h-5 inline mr-2"></i> 新增今日行程
-                    </button>
-                </div>
-            `;
-
-
-            return { daySelectorButtons, content: dailySummaryCard + dressCodeCard + eventsList + addEventButton };
-        }
-
-        function renderGuide() {
-            if (!state.tripData) return `<div class="p-8 text-center text-accent-red">指南資料載入錯誤。</div>`;
-
-            const f = state.tripData.flights;
-            const tripYear = state.tripData.dates.substring(0, 4);
-            
-            // --- 1. 每日天氣預報卡片 (更新為網格佈局) ---
-            const weatherGridItems = state.tripData.itinerary.map(day => {
-                // 假設 weather 格式為 "8°C, 晴 (API載入中)"
-                const parts = day.weather.split(', ');
-                const temp = parts[0] || 'N/A';
-                // 提取天氣狀況，去除括號內的資訊
-                const condition = parts[1] ? parts[1].split(' (')[0] : '未知';
-                const icon = getWeatherIcon(condition); 
-                const [month, dayNum] = day.date.split('/');
-
-                return `
-                    <div class="p-3 bg-warm-gray rounded-xl shadow-lg flex flex-col justify-between aspect-square hover:bg-white transition-colors">
-                        <div class="text-xs text-gray-500 font-medium">
-                            ${day.dayName}
-                        </div>
-                        <div class="flex flex-col items-center justify-center flex-grow">
-                            <i data-lucide="${icon}" class="w-8 h-8 text-fuji-blue mb-1"></i>
-                            <p class="text-2xl font-black text-gray-800">${temp}</p>
-                            <p class="text-xs text-gray-600 mt-1">${condition}</p>
-                        </div>
-                        <div class="text-xs text-right font-bold text-gray-800 border-t border-gray-300 pt-1 mt-1">
-                             ${dayNum}/${month}
-                        </div>
-                    </div>
-                `;
-            }).join('');
-
-            const weatherCard = `
-                <div class="p-4 rounded-xl bg-snow-white shadow-lg mb-4 border-l-4 border-accent-yellow">
-                    <h3 class="text-lg font-bold text-gray-700 mb-3 flex items-center"><i data-lucide="cloud-sun" class="w-5 h-5 mr-2 text-accent-yellow"></i> 每日天氣預報</h3>
-                    <div class="grid grid-cols-3 gap-4"> 
-                        ${weatherGridItems}
-                    </div>
-                    <p class="text-xs text-gray-500 mt-3">天氣資料為模擬數據，實際情況請以當地預報為準。</p>
-                </div>
-            `;
-
-            // Fix: 匯率為 0 時顯示載入中
-            const rateDisplay = state.exchangeRate.rate === 0.0 ? state.exchangeRate.source : state.exchangeRate.rate.toFixed(2);
-            
-            // --- 2. 航班卡片 ---
-            const flightCard = (type, data) => `
-                <div class="p-4 rounded-xl bg-snow-white shadow-lg mb-4 border-l-4 ${type === 'outbound' ? 'border-accent-red' : 'border-fuji-blue'}">
-                    <div class="flex items-center justify-between mb-2">
-                        <h3 class="text-lg font-bold text-gray-700">${type === 'outbound' ? '去程' : '回程'}：${data.flight}</h3>
-                        <span class="px-3 py-1 text-xs font-bold rounded-full ${data.status === '準時' ? 'bg-accent-green text-white' : 'bg-accent-red text-white'}">
-                            ${data.status}
-                        </span>
-                    </div>
-                    <p class="text-sm text-gray-500 mb-2">
-                        <i data-lucide="plane-takeoff" class="w-4 h-4 inline mr-1 text-fuji-blue"></i> 
-                        ${data.departure} - ${data.from} → ${data.arrival} - ${data.to}
-                    </p>
-                    <button class="text-xs text-fuji-blue hover:underline mt-1" onclick="alert('航班狀態實時查詢功能待連接航空公司 API')">
-                        <i data-lucide="refresh-cw" class="w-3 h-3 inline mr-1"></i> 查詢最新狀態
-                    </button>
-                </div>
-            `;
-            
-            // --- 3. 匯率卡片 ---
-            const exchangeRateCard = `
-                <div class="p-4 rounded-xl bg-snow-white shadow-lg mb-4 border-t-4 border-accent-yellow">
-                    <h3 class="text-lg font-bold text-gray-700 mb-2 flex items-center"><i data-lucide="dollar-sign" class="w-5 h-5 mr-2 text-accent-yellow"></i> 即時對換率</h3>
-                    <div class="text-3xl font-extrabold text-fuji-blue">
-                        1 ${state.tripData.budget.baseCurrency} = ${rateDisplay} ${state.tripData.budget.targetCurrency}
-                    </div>
-                    <p class="text-xs text-gray-500 mt-2">
-                        資料來源: ${state.exchangeRate.source}
-                        <button class="text-fuji-blue/70 hover:underline ml-2" onclick="fetchExchangeRate()" aria-label="重新整理匯率">
-                            <i data-lucide="rotate-cw" class="w-3 h-3 inline"></i>
-                        </button>
-                    </p>
-                </div>
-            `;
-
-            // --- 4. 地圖卡片 ---
-            const mapLinkCard = `
-                <div class="p-4 rounded-xl bg-snow-white shadow-lg mb-4 border-r-4 border-accent-green">
-                    <h3 class="text-lg font-bold text-gray-700 mb-2 flex items-center"><i data-lucide="map-pin" class="w-5 h-5 mr-2 text-accent-green"></i> 韓國首爾地圖</h3>
-                    <p class="text-sm text-gray-500 mb-3">使用 Naver Map 瀏覽所有行程地點。</p>
-                    <a href="https://map.naver.com/" target="_blank" class="bg-accent-green hover:bg-accent-green/80 text-snow-white text-md py-2 px-4 rounded-full font-bold transition-colors flex items-center justify-center">
-                        <i data-lucide="navigation" class="w-4 h-4 mr-2"></i> 打開 Naver Map 總覽
-                    </a>
-                </div>
-            `;
-            
-            // --- 5. 用戶 ID 卡片 ---
-             const userIdCard = `
-                <div class="p-4 rounded-xl bg-snow-white shadow-lg mb-4 border-b-4 border-warm-gray">
-                    <h3 class="text-sm font-bold text-gray-700 mb-2 flex items-center"><i data-lucide="user" class="w-4 h-4 mr-2 text-fuji-blue"></i> 用戶 ID (分享/除錯用)</h3>
-                    <p class="text-xs break-words text-gray-500">${window.userId || '未登入/載入中...'}</p>
-                </div>
-            `;
-
-
-            return `
-                <div class="p-4 pb-20">
-                    <h2 class="text-xl font-bold text-fuji-blue mb-4">旅行指南與資訊</h2>
-                    ${weatherCard}
-                    ${flightCard('outbound', f.outbound)}
-                    ${flightCard('inbound', f.inbound)}
-                    ${exchangeRateCard}
-                    ${mapLinkCard}
-                    ${userIdCard}
-                </div>
-            `;
-        }
-        
-        function renderBudget() {
-             if (!state.tripData) return `<div class="p-8 text-center text-accent-red">預算資料載入錯誤。</div>`;
-
-            const budgetData = state.tripData.budget;
-            const dailyData = budgetData.daily;
-            const currency = budgetData.baseCurrency; // HKD
-
-            // 計算總花費 (從所有 expenses 的 amountHKD 總和)
-            const totalSpent = dailyData.reduce((acc, day) => {
-                const daySpent = day.expenses.reduce((sum, exp) => sum + exp.amountHKD, 0);
-                return acc + daySpent;
-            }, 0);
-            
-            const remaining = budgetData.totalBudget - totalSpent;
-
-            // 總預算卡片
-            const totalCard = `
-                <div class="m-4 p-6 bg-fuji-blue shadow-xl rounded-2xl text-snow-white card-japanese">
-                    <p class="text-sm opacity-80">總旅行預算 (總支出)</p>
-                    <h3 class="text-4xl font-extrabold mb-1">$${remaining.toFixed(0)}</h3>
-                    <p class="text-sm">餘額 / 總預算：$${totalSpent.toFixed(0)} / $${budgetData.totalBudget.toFixed(0)} ${currency}</p>
-                    <div class="w-full bg-fuji-blue/50 rounded-full h-2.5 mt-2">
-                        <div class="h-2.5 rounded-full ${remaining < 0 ? 'bg-accent-red' : 'bg-accent-green'}" 
-                             style="width: ${(totalSpent / budgetData.totalBudget * 100).toFixed(1) > 100 ? '100' : (totalSpent / budgetData.totalBudget * 100).toFixed(1)}%">
-                        </div>
-                    </div>
-                </div>
-            `;
-            
-            // 每日清單 (包含新增消費按鈕和詳細列表)
-            const dailyList = `
-                <div class="m-4 mt-6">
-                    <h2 class="text-xl font-bold text-gray-700 mb-3">每日消費概覽</h2>
-                    ${dailyData.map((day, index) => {
-                        // 重新計算當日花費
-                        const daySpent = day.expenses.reduce((sum, exp) => sum + exp.amountHKD, 0);
-                        const dailyRemaining = day.budget - daySpent;
-                        
-                        const tripYear = state.tripData.dates.substring(0, 4);
-                        const formattedDate = formatDateToDisplay(day.date, tripYear);
-                        const dayName = state.tripData.itinerary[index].dayName;
-                        const isCurrentDay = index === state.currentDayIndex;
-                        
-                        // 消費紀錄列表
-                        const expenseDetail = day.expenses.map(exp => {
-                             const iconName = categoryIcons[exp.category] || 'map-pin';
-                             return `
-                                <div class="flex justify-between items-center text-xs py-2 border-b border-warm-gray last:border-b-0">
-                                    <div class="flex items-center space-x-2 w-1/2">
-                                        <i data-lucide="${iconName}" class="w-3 h-3 text-fuji-blue"></i>
-                                        <span class="truncate">${exp.notes || exp.category}</span>
-                                    </div>
-                                    <div class="text-right font-semibold w-1/4 text-gray-700">
-                                        ${exp.amountLocal.toFixed(0)} ${exp.currency}
-                                    </div>
-                                    <div class="text-right font-bold w-1/4 text-gray-800">
-                                        $${exp.amountHKD.toFixed(1)} ${currency}
-                                    </div>
-                                </div>
-                            `;
-                        }).join('');
-
-                        return `
-                             <div class="mb-5 bg-snow-white shadow-xl rounded-2xl border-l-4 ${dailyRemaining < 0 ? 'border-accent-red' : 'border-fuji-blue'} ${isCurrentDay ? 'border-4 border-accent-yellow/50' : ''}">
-                                <div class="p-4">
-                                    <div class="flex justify-between items-center">
-                                        <div class="flex-1">
-                                            <h4 class="font-bold text-lg text-gray-800">${formattedDate} (${dayName})</h4>
-                                            <p class="text-sm text-gray-500">預算: $${day.budget.toFixed(0)} ${currency}</p>
+                    {dayPlan.activities.length === 0 ? (
+                        <p className="text-gray-500 italic p-4 bg-indigo-50 rounded-lg border border-indigo-100">
+                            目前沒有任何行程，快來新增吧！
+                        </p>
+                    ) : (
+                        <ul className="space-y-3">
+                            {dayPlan.activities
+                                .sort((a, b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0)) // 根據時間戳記排序
+                                .map((activity, index) => (
+                                    <li key={activity.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-xl shadow-md hover:shadow-lg transition duration-200">
+                                        <div className="flex items-start flex-1">
+                                            <span className="font-semibold text-lg text-indigo-600 mr-3 w-8 text-center flex-shrink-0">
+                                                {index + 1}.
+                                            </span>
+                                            <p className="text-gray-800 text-lg break-words flex-1">
+                                                {activity.text}
+                                            </p>
                                         </div>
-                                        <div class="text-right">
-                                            <p class="text-lg font-extrabold ${dailyRemaining < 0 ? 'text-accent-red' : 'text-accent-green'}">$${dailyRemaining.toFixed(0)}</p>
-                                            <p class="text-xs text-gray-500">已花費: $${daySpent.toFixed(0)} ${currency}</p>
-                                        </div>
-                                        <button onclick="selectDay(${index})" class="ml-4 text-fuji-blue hover:text-accent-red transition-colors" aria-label="切換到此日子">
-                                            <i data-lucide="${isCurrentDay ? 'minus-circle' : 'plus-circle'}" class="w-5 h-5"></i>
+                                        <button
+                                            onClick={() => handleDeleteItem(0, activity.id)}
+                                            className="ml-4 p-2 text-red-500 hover:text-red-700 bg-red-100 rounded-full transition duration-150 hover:bg-red-200"
+                                            aria-label="Delete item"
+                                        >
+                                            <LucideTrash2 className="w-5 h-5" />
                                         </button>
-                                    </div>
-                                    
-                                    <div class="${isCurrentDay ? 'block' : 'hidden'} mt-4">
-                                        <button onclick="openAddExpenseModal(${index})" class="w-full bg-accent-yellow hover:bg-accent-yellow/80 text-gray-900 text-sm py-2 px-4 rounded-full font-bold shadow-md transition-colors flex items-center justify-center mb-4">
-                                            <i data-lucide="wallet" class="w-4 h-4 inline mr-2"></i>
-                                            新增今日消費 (${state.tripData.budget.targetCurrency})
-                                        </button>
-                                        
-                                        ${day.expenses.length > 0 ? `
-                                            <div class="mt-4 p-3 bg-warm-gray rounded-lg">
-                                                <div class="flex justify-between items-center text-xs font-bold text-gray-500 mb-2 border-b border-gray-300 pb-1">
-                                                    <span class="w-1/2">項目</span>
-                                                    <span class="w-1/4 text-right">${state.tripData.budget.targetCurrency}</span>
-                                                    <span class="w-1/4 text-right">${currency}</span>
-                                                </div>
-                                                ${expenseDetail}
-                                            </div>
-                                        ` : '<p class="text-sm text-gray-500 text-center py-2">本日無消費紀錄。</p>'}
-                                    </div>
-                                </div>
-                            </div>
-                        `;
-                    }).join('')}
-                </div>
-            `;
-            
-            return totalCard + dailyList;
-        }
-
-
-        function renderApp() {
-            const appContent = document.getElementById('app-content');
-            const header = document.getElementById('app-header');
-            const dayBar = document.getElementById('day-bar');
-
-            if (state.tripData) {
-                header.innerHTML = `
-                    <div class="flex flex-col text-center pt-2 pb-1">
-                        <h1 class="text-xl font-bold text-fuji-blue">${state.tripData.tripName}</h1>
-                        <p class="text-xs text-gray-500">${state.tripData.dates}</p>
-                    </div>
-                `;
-            } else {
-                 header.innerHTML = `
-                    <div class="flex flex-col text-center pt-2 pb-1">
-                        <h1 class="text-xl font-bold text-fuji-blue">首爾聖誕旅行 (錯誤)</h1>
-                        <p class="text-xs text-accent-red">數據載入失敗，請檢查控制台。</p>
-                    </div>
-                `;
-            }
-            
-            // 渲染 Day Bar
-            if (state.currentTab === 'itinerary' || state.currentTab === 'budget') {
-                const { daySelectorButtons } = renderItinerary();
-                dayBar.classList.remove('hidden');
-                document.getElementById('day-selector-buttons').innerHTML = daySelectorButtons;
-                
-                // 滾動到當前選中的 Day
-                const currentDayButton = document.querySelector('.bg-fuji-blue.text-snow-white');
-                if (currentDayButton) {
-                    currentDayButton.parentElement.scrollTo({
-                        left: currentDayButton.offsetLeft - (currentDayButton.parentElement.offsetWidth / 2) + (currentDayButton.offsetWidth / 2),
-                        behavior: 'smooth'
-                    });
-                }
-
-
-            } else {
-                dayBar.classList.add('hidden');
-            }
-
-
-            // 渲染主內容區
-            let content = '';
-            switch (state.currentTab) {
-                case 'itinerary':
-                    content = renderItinerary().content; 
-                    break;
-                case 'guide':
-                    content = renderGuide();
-                    break;
-                case 'budget':
-                    content = renderBudget();
-                    break;
-            }
-            appContent.innerHTML = content;
-            
-            // 重新渲染 Lucide icons
-            lucide.createIcons();
-
-            // 更新導覽列狀態
-            document.querySelectorAll('.tab-btn').forEach(btn => {
-                const tab = btn.getAttribute('data-tab');
-                if (tab === state.currentTab) {
-                    btn.classList.add('text-fuji-blue', 'font-bold', 'bg-snow-white', 'shadow-2xl', 'scale-105');
-                    btn.classList.remove('text-warm-gray', 'hover:text-snow-white/80', 'opacity-70');
-                } else {
-                    btn.classList.remove('text-fuji-blue', 'font-bold', 'bg-snow-white', 'shadow-2xl', 'scale-105');
-                    btn.classList.add('text-warm-gray', 'hover:text-snow-white/80', 'opacity-70');
-                }
-            });
-        }
-
-        window.onload = () => {
-             renderApp();
-        };
-
-        // 將重要函數暴露給全域以供 HTML 內聯事件使用
-        window.switchTab = switchTab;
-        window.selectDay = selectDay;
-        window.openEditBudgetModal = openEditBudgetModal;
-        window.closeEditBudgetModal = closeEditBudgetModal;
-        window.saveBudget = saveBudget;
-        window.toggleItineraryEditMode = toggleItineraryEditMode;
-        window.fetchExchangeRate = fetchExchangeRate; // 暴露新的匯率獲取函數
-        window.openAddExpenseModal = openAddExpenseModal;
-        window.closeAddExpenseModal = closeAddExpenseModal;
-    </script>
-
-    <style>
-        /* 日系可愛風格背景 */
-        body {
-            font-family: 'Zen Maru Gothic', sans-serif;
-            background-color: #f5f5f5; /* warm-gray */
-            background-image: radial-gradient(circle at 100% 150%, transparent 24%, #6a82b31a 25%, #6a82b31a 26%, transparent 27%, transparent 74%, #6a82b31a 75%, #6a82b31a 76%, transparent 77%, transparent), radial-gradient(circle at 0% 150%, transparent 24%, #6a82b31a 25%, #6a82b31a 26%, transparent 27%, transparent 74%, #6a82b31a 75%, #6a82b31a 76%, transparent 77%, transparent), radial-gradient(circle at 50% 100%, #6a82b31a 10%, #f5f5f5 11%);
-            background-size: 50px 100px;
-            background-position: 0 0, 50px 0, 0 0;
-            padding-bottom: 70px; /* 底部導覽列高度 */
-        }
-        /* 日式圓角卡片樣式 */
-        .card-japanese {
-            border-radius: 18px; /* 更大的圓角 */
-        }
-        /* Main Content 頂部空間調整：Header (56px) + Day Bar (~48px) */
-        .content-container {
-            min-height: 100vh;
-        }
-        /* 隱藏滾動條但保持滾動功能 (僅限 Webkit 瀏覽器，如 Chrome/Safari) */
-        #day-selector-buttons::-webkit-scrollbar {
-            display: none;
-        }
-        #day-selector-buttons {
-            -ms-overflow-style: none;  /* IE and Edge */
-            scrollbar-width: none;  /* Firefox */
-        }
-        /* 彈出視窗動畫 */
-        .modal {
-            transition: opacity 0.3s ease, visibility 0.3s ease;
-        }
-    </style>
-</head>
-
-<body class="min-h-screen">
-    <header id="app-header" class="fixed top-0 left-0 w-full bg-snow-white/95 backdrop-blur-sm z-20 shadow-md">
-        <div class="max-w-md mx-auto">
-            <div class="flex flex-col text-center pt-2 pb-1">
-                <h1 class="text-xl font-bold text-fuji-blue">首爾聖誕旅行</h1>
-                <p class="text-xs text-gray-500">2025/12/25 - 2025/12/29</p>
-            </div>
-        </div>
-    </header>
-
-    <div id="day-bar" class="fixed top-[56px] left-0 right-0 max-w-md mx-auto z-10 bg-warm-gray/90 backdrop-blur-sm shadow-md">
-        <div class="flex items-center p-2">
-            <div id="day-selector-buttons" class="flex overflow-x-auto flex-1 min-w-0 pb-1">
-                </div>
-            
-            <button onclick="addDay()" class="flex-shrink-0 ml-2 px-3 py-2 text-sm font-bold rounded-full bg-accent-green text-snow-white shadow-md transition-transform hover:scale-105 whitespace-nowrap">
-                <i data-lucide="calendar-plus" class="w-4 h-4 inline mr-1"></i>
-                新增日
-            </button>
-        </div>
-    </div>
-
-
-    <div id="message-box" class="fixed top-16 left-0 right-0 z-40 p-4 max-w-sm mx-auto"></div>
-
-    <main id="app-content" class="max-w-md mx-auto pt-24"></main>
-
-    <nav class="fixed bottom-0 left-0 w-full bg-fuji-blue shadow-2xl z-20">
-        <div class="max-w-md mx-auto flex justify-around p-2">
-            <button data-tab="itinerary" onclick="switchTab('itinerary')" class="tab-btn flex flex-col items-center p-2 rounded-full transition-all duration-300">
-                <i data-lucide="calendar-check" class="w-6 h-6"></i>
-                <span class="text-xs">行程</span>
-            </button>
-            <button data-tab="guide" onclick="switchTab('guide')" class="tab-btn flex flex-col items-center p-2 rounded-full transition-all duration-300">
-                <i data-lucide="book-open-text" class="w-6 h-6"></i>
-                <span class="text-xs">指南</span>
-            </button>
-            <button data-tab="budget" onclick="switchTab('budget')" class="tab-btn flex flex-col items-center p-2 rounded-full transition-all duration-300">
-                <i data-lucide="wallet" class="w-6 h-6"></i>
-                <span class="text-xs">消費</span>
-            </button>
-        </div>
-    </nav>
-    
-    <div id="edit-budget-modal" class="modal fixed inset-0 bg-gray-900 bg-opacity-75 z-30 flex items-center justify-center hidden">
-        <div class="bg-snow-white p-6 rounded-2xl shadow-2xl w-11/12 max-w-sm transform scale-100 transition-transform card-japanese">
-            <h3 class="text-xl font-bold text-fuji-blue mb-4">編輯預算</h3>
-            
-            <div class="mb-4">
-                <label for="edit-total-budget" class="block text-sm font-medium text-gray-700 mb-1">總預算 (HKD)</label>
-                <input type="number" id="edit-total-budget" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-fuji-blue focus:border-fuji-blue transition" min="100" />
-            </div>
-            
-            <div class="mb-6">
-                <label for="edit-daily-budget" class="block text-sm font-medium text-gray-700 mb-1">當日預算 (HKD)</label>
-                <input type="number" id="edit-daily-budget" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-fuji-blue focus:border-fuji-blue transition" min="100" />
-            </div>
-            
-            <div class="flex justify-end space-x-3">
-                <button onclick="closeEditBudgetModal()" class="px-4 py-2 text-gray-600 bg-warm-gray rounded-full font-semibold hover:bg-gray-200 transition">
-                    取消
-                </button>
-                <button onclick="saveBudget()" class="px-4 py-2 text-snow-white bg-fuji-blue rounded-full font-semibold hover:bg-fuji-blue/80 transition">
-                    儲存變更
-                </button>
-            </div>
-        </div>
-    </div>
-    
-    <div id="add-expense-modal" class="modal fixed inset-0 bg-gray-900 bg-opacity-75 z-40 flex items-center justify-center hidden">
-        <div class="bg-snow-white p-6 rounded-2xl shadow-2xl w-11/12 max-w-sm transform scale-100 transition-transform card-japanese">
-            <h3 class="text-xl font-bold text-fuji-blue mb-2">新增消費 - <span id="modal-day-name"></span></h3>
-            <p id="modal-exchange-rate" class="text-xs text-gray-500 mb-4">匯率: 1 HKD ≈ 載入中...</p>
-            
-            <div class="mb-4">
-                <label for="expense-amount" class="block text-sm font-medium text-gray-700 mb-1">金額</label>
-                <div class="flex">
-                    <input type="number" id="expense-amount" class="flex-1 p-3 border border-gray-300 rounded-l-lg focus:ring-fuji-blue focus:border-fuji-blue transition" min="1" />
-                    <select id="expense-currency" class="p-3 border border-gray-300 border-l-0 rounded-r-lg bg-warm-gray font-semibold">
-                        <option value="KRW">KRW (韓圜)</option>
-                        <option value="HKD">HKD (港幣)</option>
-                    </select>
+                                    </li>
+                                ))
+                            }
+                        </ul>
+                    )}
                 </div>
             </div>
-            
-            <div class="mb-4">
-                <label for="expense-category" class="block text-sm font-medium text-gray-700 mb-1">類別</label>
-                <select id="expense-category" class="w-full p-3 border border-gray-300 rounded-lg bg-white focus:ring-fuji-blue focus:border-fuji-blue transition">
-                    <option value="食物">食物</option>
-                    <option value="購物">購物</option>
-                    <option value="交通">交通</option>
-                    <option value="景點">景點</option>
-                    <option value="活動">活動</option>
-                    <option value="酒店">酒店</option>
-                    <option value="甜品">甜品</option>
-                    <option value="其他">其他</option>
-                </select>
-            </div>
-            
-            <div class="mb-6">
-                <label for="expense-notes" class="block text-sm font-medium text-gray-700 mb-1">備註 (例如: 店名)</label>
-                <textarea id="expense-notes" rows="2" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-fuji-blue focus:border-fuji-blue transition" placeholder="午餐: 神仙雪濃湯"></textarea>
-            </div>
-            
-            <div class="flex justify-end space-x-3">
-                <button onclick="closeAddExpenseModal()" class="px-4 py-2 text-gray-600 bg-warm-gray rounded-full font-semibold hover:bg-gray-200 transition">
-                    取消
-                </button>
-                <button id="save-expense-btn" onclick="saveExpense()" class="px-4 py-2 text-snow-white bg-accent-red rounded-full font-semibold hover:bg-accent-red/80 transition" data-day-index="0">
-                    儲存消費
-                </button>
-            </div>
+        );
+    };
+
+
+    if (!isAuthReady) {
+        return <div className="min-h-screen flex items-center justify-center bg-gray-100"><LoadingSpinner /></div>;
+    }
+
+    return (
+        <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+            {userId ? (
+                // 已登入用戶顯示規劃器
+                loading ? <LoadingSpinner /> : <PlannerView />
+            ) : (
+                // 未登入用戶顯示認證表單
+                <AuthForm />
+            )}
+            {dataError && (
+                 <div className="fixed bottom-4 right-4 bg-red-600 text-white p-4 rounded-lg shadow-xl max-w-sm z-50">
+                    <p className="font-bold">數據錯誤</p>
+                    <p className="text-sm">{dataError}</p>
+                 </div>
+            )}
         </div>
-    </div>
+    );
+};
 
+export default App;
 
-</body>
-</html>
